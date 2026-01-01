@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -47,7 +49,7 @@ class FrameArtModeSyncStatusSensor(FrameArtModeSyncEntity, SensorEntity):
         await super().async_added_to_hass()
         # Update every 30 seconds
         self._update_task = async_track_time_interval(
-            self.hass, self._async_update_callback, 30
+            self.hass, self._async_update_callback, timedelta(seconds=30)
         )
         self.async_on_remove(lambda: self._update_task() if self._update_task else None)
 
