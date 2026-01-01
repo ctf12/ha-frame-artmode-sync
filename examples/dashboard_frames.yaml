@@ -1,0 +1,121 @@
+title: Frame TVs
+path: frame-tvs
+icon: mdi:television-ambient-light
+type: panel
+cards:
+  - type: vertical-stack
+    cards:
+      # Status Cards (one per pair)
+      - type: entities
+        title: Living Room TV
+        entities:
+          - entity: sensor.frame_artmode_sync_living_room_tv_status
+            name: Status
+          - type: chips
+            entities:
+              - entity: switch.frame_artmode_sync_living_room_tv_enabled
+                icon: mdi:toggle-switch
+              - entity: binary_sensor.frame_artmode_sync_living_room_tv_atv_active
+                icon: mdi:apple
+              - entity: binary_sensor.frame_artmode_sync_living_room_tv_in_active_hours
+                icon: mdi:clock-outline
+              - entity: binary_sensor.frame_artmode_sync_living_room_tv_override_active
+                icon: mdi:hand-back-left
+              - entity: sensor.frame_artmode_sync_living_room_tv_pair_health
+                icon: mdi:heart-pulse
+        # Conditional presence chip (uncomment if presence is enabled)
+        # - entity: binary_sensor.home
+      - type: grid
+        columns: 2
+        square: false
+        cards:
+          - type: entity
+            entity: time.frame_artmode_sync_living_room_tv_active_start
+          - type: entity
+            entity: time.frame_artmode_sync_living_room_tv_active_end
+          - type: entity
+            entity: number.frame_artmode_sync_living_room_tv_return_delay
+          - type: entity
+            entity: number.frame_artmode_sync_living_room_tv_cooldown
+          - type: entity
+            entity: select.frame_artmode_sync_living_room_tv_night_behavior
+          - type: entity
+            entity: select.frame_artmode_sync_living_room_tv_input_mode
+          - type: entity
+            entity: select.frame_artmode_sync_living_room_tv_atv_active_mode
+      - type: markdown
+        title: Recent Events
+        content: |
+          ```
+          {{ states('sensor.frame_artmode_sync_living_room_tv_recent_events') }}
+          ```
+        card_mod:
+          style: |
+            ha-markdown {
+              --code-font-family: 'Courier New', monospace;
+              --code-font-size: 0.85em;
+            }
+      - type: horizontal-stack
+        cards:
+          - type: button
+            name: Force Art On
+            tap_action:
+              action: call-service
+              service: frame_artmode_sync.force_art_on
+              service_data:
+                # Replace with your device_id (found in device registry) or entry_id
+                # device_id: "abc123..."
+                entry_id: <entry_id_here>
+          - type: button
+            name: Force Art Off
+            tap_action:
+              action: call-service
+              service: frame_artmode_sync.force_art_off
+              service_data:
+                # Replace with your device_id or entry_id
+                entry_id: <entry_id_here>
+          - type: button
+            name: Resync
+            tap_action:
+              action: call-service
+              service: frame_artmode_sync.resync
+              service_data:
+                # Replace with your device_id or entry_id
+                entry_id: <entry_id_here>
+          - type: button
+            name: TV Off
+            tap_action:
+              action: call-service
+              service: frame_artmode_sync.force_tv_off
+              service_data:
+                # Replace with your device_id or entry_id
+                entry_id: <entry_id_here>
+          - type: button
+            name: Clear Override
+            tap_action:
+              action: call-service
+              service: frame_artmode_sync.clear_override
+              service_data:
+                # Replace with your device_id or entry_id
+                entry_id: <entry_id_here>
+          - type: button
+            name: Clear Breaker
+            tap_action:
+              action: call-service
+              service: frame_artmode_sync.clear_breaker
+              service_data:
+                # Replace with your device_id or entry_id
+                entry_id: <entry_id_here>
+      
+      # Add more pair cards here (duplicate the pattern above)
+
+      # Global Actions
+      - type: section
+        label: Global Actions
+      - type: button
+        name: Resync All Pairs
+        tap_action:
+          action: call-service
+          service: frame_artmode_sync.resync
+          # No entry_id = applies to all
+

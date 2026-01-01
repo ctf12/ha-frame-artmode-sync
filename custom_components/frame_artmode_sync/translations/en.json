@@ -1,0 +1,91 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Frame Art Mode Sync Setup",
+        "data": {
+          "pair_name": "Pair Name",
+          "frame_host": "Frame TV IP Address",
+          "frame_port": "Frame TV Port",
+          "frame_mac": "Frame TV MAC Address (optional)",
+          "tag": "Tag (e.g., LR, BR)",
+          "apple_tv_choice": "Apple TV Selection Method"
+        },
+        "data_description": {
+          "pair_name": "A friendly name for this Frame/Apple TV pair",
+          "frame_host": "The IP address of your Samsung Frame TV",
+          "frame_port": "The port number (usually 8002)",
+          "frame_mac": "MAC address for Wake-on-LAN support",
+          "tag": "A short identifier (e.g., LR for Living Room)",
+          "apple_tv_choice": "Choose between discovered or manual Apple TV entry"
+        }
+      },
+      "select_apple_tv": {
+        "title": "Select Apple TV",
+        "data": {
+          "apple_tv_identifier": "Apple TV"
+        }
+      },
+      "apple_tv_manual": {
+        "title": "Apple TV Details",
+        "data": {
+          "apple_tv_host": "Apple TV IP Address",
+          "apple_tv_identifier": "Apple TV Identifier (optional)"
+        }
+      },
+      "options": {
+        "title": "Options",
+        "data": {
+          "fallback_ha_media_player_entity": "Fallback Media Player Entity",
+          "presence_mode": "Presence Mode"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Device is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Frame Art Mode Sync",
+        "description": "Configure options for this Frame/Apple TV pair"
+      }
+    }
+  },
+  "services": {
+    "force_art_on": {
+      "name": "Force Art Mode On",
+      "description": "Force Art Mode on for the specified pair(s)"
+    },
+    "force_art_off": {
+      "name": "Force Art Mode Off",
+      "description": "Force Art Mode off for the specified pair(s)"
+    },
+    "force_tv_on": {
+      "name": "Force TV On",
+      "description": "Force TV on (exit Art Mode) for the specified pair(s)"
+    },
+    "force_tv_off": {
+      "name": "Force TV Off",
+      "description": "Force TV off for the specified pair(s)"
+    },
+    "resync": {
+      "name": "Resync",
+      "description": "Trigger a resync for the specified pair(s)"
+    },
+    "clear_override": {
+      "name": "Clear Override",
+      "description": "Clear manual override for the specified pair(s)"
+    },
+    "clear_breaker": {
+      "name": "Clear Breaker",
+      "description": "Clear circuit breaker for the specified pair(s)"
+    }
+  }
+}
+

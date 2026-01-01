@@ -1,0 +1,16 @@
+{
+  "domain": "frame_artmode_sync",
+  "name": "Frame Art Mode Sync",
+  "version": "0.1.0",
+  "documentation": "https://github.com/chrisfill/ha-frame-artmode-sync",
+  "issue_tracker": "https://github.com/chrisfill/ha-frame-artmode-sync/issues",
+  "codeowners": ["@chrisfill"],
+  "requirements": [
+    "pyatv>=0.14.0",
+    "samsungtvws>=2.6.0",
+    "wakeonlan>=3.0.0"
+  ],
+  "iot_class": "local_polling",
+  "config_flow": true
+}
+

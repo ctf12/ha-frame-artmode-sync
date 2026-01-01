@@ -1,0 +1,20 @@
+NOTICE
+
+This project (ha-frame-artmode-sync) is licensed under the MIT License.
+
+This project depends on the following third-party libraries, which are installed via Home Assistant's requirement management system:
+
+1. pyatv (MIT License)
+   - Used for Apple TV connectivity and push updates
+   - Repository: https://github.com/postlund/pyatv
+   - License: https://github.com/postlund/pyatv/blob/master/LICENSE
+
+2. samsungtvws / samsung-tv-ws-api (LGPL-3.0 License)
+   - Used for Samsung TV WebSocket control
+   - Repository: https://github.com/xchwarze/samsung-tv-ws-api
+   - License: https://github.com/xchwarze/samsung-tv-ws-api/blob/master/LICENSE
+
+The licenses of these third-party dependencies remain with their respective authors and are not affected by this project's MIT license. Users must comply with all applicable licenses when using this integration.
+
+This project is not affiliated with, endorsed by, or associated with Samsung or Apple.
+
