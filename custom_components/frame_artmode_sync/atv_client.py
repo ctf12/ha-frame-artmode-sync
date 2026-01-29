@@ -7,9 +7,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import Callable
 
-from pyatv import connect, scan
-from pyatv.const import DeviceState, PowerState
+from pyatv import connect, scan, pair
+from pyatv.const import DeviceState, PowerState, Protocol
 from pyatv.core import PushUpdater
+from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
 from pyatv.interface import AppleTV, Playing, PowerListener, PushListener
 
 from homeassistant.util import dt as dt_util
@@ -131,12 +132,32 @@ class ATVClient:
                 _LOGGER.info("Found Apple TV: %s at %s (identifier: %s)", 
                            config.name, config.address, config.identifier)
 
-                # pyatv compatibility: some versions require loop parameter
+                # Try to connect (may require pairing)
                 try:
-                    self.atv = await connect(config, loop=loop)
-                except TypeError:
-                    # Fallback for versions that don't accept loop parameter
-                    self.atv = await connect(config)
+                    # pyatv compatibility: some versions require loop parameter
+                    try:
+                        self.atv = await connect(config, loop=loop)
+                    except TypeError:
+                        # Fallback for versions that don't accept loop parameter
+                        self.atv = await connect(config)
+                except (AuthenticationError, NotPairedError) as auth_ex:
+                    _LOGGER.warning(
+                        "Apple TV at %s requires pairing. "
+                        "Please pair this device using the Home Assistant Apple TV integration first, "
+                        "or use 'atvremote pair' command. Error: %s",
+                        self.host, auth_ex
+                    )
+                    # Note: We could implement pairing here, but it's better to use HA's Apple TV integration
+                    # or atvremote for initial pairing, then this integration can connect
+                    return False
+                except PairingError as pair_ex:
+                    _LOGGER.warning(
+                        "Apple TV pairing error at %s: %s. "
+                        "Device may need to be re-paired.",
+                        self.host, pair_ex
+                    )
+                    return False
+                
                 self.push_updater = self.atv.push_updater
 
                 self._listener = ATVPushListener(self)
@@ -149,7 +170,16 @@ class ATVClient:
 
                 return True
             except Exception as ex:
-                _LOGGER.warning("Failed to connect to Apple TV at %s: %s", self.host, ex)
+                # Log more detailed error information
+                error_type = type(ex).__name__
+                error_msg = str(ex)
+                _LOGGER.warning(
+                    "Failed to connect to Apple TV at %s: %s (%s). "
+                    "This may indicate the device needs pairing, is sleeping, or network issues.",
+                    self.host, error_msg, error_type
+                )
+                # Log full exception for debugging
+                _LOGGER.debug("Full connection error traceback:", exc_info=True)
                 await self._handle_disconnect()
                 # Schedule reconnect attempt if enabled
                 if self._should_reconnect:
