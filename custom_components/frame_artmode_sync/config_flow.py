@@ -51,9 +51,16 @@ _LOGGER = logging.getLogger(__name__)
 try:
     from pyatv import scan, pair, connect
     from pyatv.const import Protocol
-    from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
+    try:
+        from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
+    except ImportError:
+        # Some pyatv versions may not have these specific exceptions
+        AuthenticationError = Exception  # type: ignore[assignment, misc]
+        NotPairedError = Exception  # type: ignore[assignment, misc]
+        PairingError = Exception  # type: ignore[assignment, misc]
     PYATV_AVAILABLE = True
-except ImportError:
+    _LOGGER.debug("pyatv successfully imported")
+except ImportError as import_err:
     scan = None
     pair = None
     connect = None
@@ -62,6 +69,7 @@ except ImportError:
     NotPairedError = Exception  # type: ignore[assignment, misc]
     PairingError = Exception  # type: ignore[assignment, misc]
     PYATV_AVAILABLE = False
+    _LOGGER.warning("pyatv not available: %s. Apple TV pairing will be skipped. Install pyatv to enable Apple TV support.", import_err)
 
 
 async def async_discover_apple_tvs(hass: HomeAssistant) -> list[dict[str, str]]:
@@ -102,6 +110,7 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.data: dict[str, Any] = {}
         self._pairing = None
         self._pairing_protocol = None
+        self._paired_config = None  # Store paired Apple TV config for credential saving
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -188,14 +197,20 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Pair with Apple TV if needed."""
+        _LOGGER.info("Entering async_step_pair_apple_tv (user_input=%s)", "provided" if user_input else "None")
+        
         if not PYATV_AVAILABLE:
             # Skip pairing if pyatv not available, proceed to options
+            _LOGGER.warning("pyatv not available, skipping pairing")
             return await self.async_step_options()
         
         apple_tv_host = self.data.get("apple_tv_host")
         apple_tv_identifier = self.data.get("apple_tv_identifier")
         
+        _LOGGER.info("Apple TV pairing: host=%s, identifier=%s", apple_tv_host, apple_tv_identifier)
+        
         if not apple_tv_host:
+            _LOGGER.warning("No Apple TV host provided, skipping pairing")
             return await self.async_step_options()
         
         # Try to scan for the Apple TV
@@ -213,10 +228,12 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     results = await scan(hosts=[apple_tv_host], timeout=10)
             
             if not results:
-                _LOGGER.warning("Could not find Apple TV for pairing, proceeding without pairing")
+                _LOGGER.warning("Could not find Apple TV for pairing at %s (identifier=%s), proceeding without pairing", 
+                              apple_tv_host, apple_tv_identifier)
                 return await self.async_step_options()
             
             config = results[0]
+            _LOGGER.info("Found Apple TV: %s at %s, checking if pairing is needed", config.name, config.address)
             
             # Try to connect to see if pairing is needed
             try:
@@ -226,41 +243,63 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     atv = await connect(config)
                 # Connection successful, no pairing needed
                 await atv.close()
-                _LOGGER.info("Apple TV already paired, proceeding to options")
+                _LOGGER.info("Apple TV already paired (connection successful), proceeding to options")
                 return await self.async_step_options()
             except Exception as auth_ex:
                 # Check if it's an authentication/pairing error
-                if PYATV_AVAILABLE and isinstance(auth_ex, (AuthenticationError, NotPairedError)):
+                is_pairing_required = False
+                if PYATV_AVAILABLE:
+                    try:
+                        is_pairing_required = isinstance(auth_ex, (AuthenticationError, NotPairedError))
+                    except Exception:
+                        # Fallback: check error message
+                        error_msg = str(auth_ex).lower()
+                        is_pairing_required = "not paired" in error_msg or "authentication" in error_msg
+                
+                if is_pairing_required:
+                    _LOGGER.info("Apple TV requires pairing: %s", auth_ex)
                     # Pairing is required - continue to pairing flow
                     pass
                 else:
                     # Some other error, proceed to options
-                    _LOGGER.warning("Error checking pairing status: %s, proceeding anyway", auth_ex)
+                    _LOGGER.warning("Error checking pairing status (not a pairing error): %s, proceeding anyway", auth_ex)
                     return await self.async_step_options()
             
             # Pairing is needed
             if user_input is None:
                 # Start pairing process
+                _LOGGER.info("Starting Apple TV pairing process...")
                 try:
                     # Find MRP protocol (most common for Apple TV)
                     pairing = None
                     pairing_protocol = None
                     if Protocol is None:
-                        _LOGGER.warning("pyatv Protocol not available, cannot pair")
+                        _LOGGER.error("pyatv Protocol not available, cannot pair")
                         return await self.async_step_options()
+                    
+                    _LOGGER.info("Available protocols: %s", [p.name if hasattr(p, 'name') else str(p) for p in config.protocols])
+                    
                     for protocol in config.protocols:
+                        protocol_name = protocol.name if hasattr(protocol, 'name') else str(protocol)
+                        _LOGGER.debug("Trying pairing protocol: %s", protocol_name)
                         if protocol in (Protocol.MRP, Protocol.AirPlay, Protocol.Companion):
                             try:
-                                pairing = await pair(config, protocol, loop=loop)
-                            except TypeError:
-                                pairing = await pair(config, protocol)
-                            if pairing:
-                                pairing_protocol = protocol
-                                break
+                                _LOGGER.info("Attempting to pair using protocol: %s", protocol_name)
+                                try:
+                                    pairing = await pair(config, protocol, loop=loop)
+                                except TypeError:
+                                    pairing = await pair(config, protocol)
+                                if pairing:
+                                    pairing_protocol = protocol
+                                    _LOGGER.info("Successfully initiated pairing with protocol: %s", protocol_name)
+                                    break
+                            except Exception as pair_protocol_ex:
+                                _LOGGER.debug("Pairing failed with protocol %s: %s", protocol_name, pair_protocol_ex)
+                                continue
                     
                     if not pairing:
-                        _LOGGER.warning("No supported pairing protocol found. Available protocols: %s", 
-                                      [p.name for p in config.protocols])
+                        _LOGGER.error("No supported pairing protocol found. Available protocols: %s", 
+                                      [p.name if hasattr(p, 'name') else str(p) for p in config.protocols])
                         return await self.async_step_options()
                     
                     # Store pairing object for PIN entry
@@ -268,7 +307,33 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._pairing_protocol = pairing_protocol
                     
                     # Get PIN (will be displayed on Apple TV)
-                    pin = await pairing.begin()
+                    try:
+                        _LOGGER.info("Calling pairing.begin() to get PIN code...")
+                        pin = await pairing.begin()
+                        if pin:
+                            _LOGGER.info("Apple TV pairing PIN code: %s (also displayed on Apple TV screen)", pin)
+                        else:
+                            _LOGGER.warning("Pairing.begin() returned None/empty PIN - check Apple TV screen for PIN")
+                            pin = None
+                    except Exception as begin_ex:
+                        _LOGGER.error("Error starting pairing (pairing.begin() failed): %s", begin_ex, exc_info=True)
+                        # Clean up and show error
+                        try:
+                            await pairing.close()
+                        except Exception:
+                            pass
+                        self._pairing = None
+                        return self.async_show_form(
+                            step_id="pair_apple_tv",
+                            data_schema=vol.Schema({
+                                vol.Required("pin", default=""): str,
+                            }),
+                            errors={"base": "pairing_failed"},
+                        )
+                    
+                    # Show form with PIN (PIN should appear on Apple TV screen, and we'll show it in logs)
+                    pin_display = str(pin) if pin else "Check your Apple TV screen"
+                    _LOGGER.info("Showing pairing form. PIN to enter: %s", pin_display)
                     
                     return self.async_show_form(
                         step_id="pair_apple_tv",
@@ -276,7 +341,7 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             vol.Required("pin", default=""): str,
                         }),
                         description_placeholders={
-                            "pin": pin if pin else "Check your Apple TV screen for the PIN code",
+                            "pin": pin_display,
                         },
                         errors={},
                     )

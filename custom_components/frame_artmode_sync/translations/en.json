@@ -35,27 +35,31 @@
       },
       "pair_apple_tv": {
         "title": "Pair Apple TV",
-        "description": "A PIN code will be displayed on your Apple TV screen. Enter it below to complete pairing.",
+        "description": "A PIN code will be displayed on your Apple TV screen. Enter it below to complete pairing.\n\nPIN Code: {pin}",
         "data": {
           "pin": "PIN Code"
         },
         "data_description": {
           "pin": "Enter the PIN code shown on your Apple TV screen"
+        },
+        "description_placeholders": {
+          "pin": "Check your Apple TV screen"
         }
       },
       "options": {
         "title": "Options",
         "data": {
-          "fallback_ha_media_player_entity": "Fallback Media Player Entity",
+          "fallback_ha_media_player_entity": "Apple TV Fallback Media Player Entity",
           "presence_mode": "Presence Mode",
-          "tv_state_source_entity_id": "TV State Source Entity",
+          "tv_state_source_entity_id": "Samsung TV State Source Entity",
           "wake_remote_entity_id": "Wake Remote Entity",
           "presence_entity_id": "Presence Entity",
           "enable_remote_wake": "Enable Remote Wake",
           "enable_wol_fallback": "Enable WOL Fallback"
         },
         "data_description": {
-          "tv_state_source_entity_id": "Media player entity to read TV state from (e.g., media_player.great_room_frame_tv)",
+          "fallback_ha_media_player_entity": "Fallback media player entity for Apple TV state when direct pyatv connection fails",
+          "tv_state_source_entity_id": "Media player entity for Samsung Frame TV state (e.g., media_player.great_room_frame_tv from Samsung TV integration)",
           "wake_remote_entity_id": "Remote entity to use for waking TV (e.g., remote.55_frame_tv_remote)",
           "presence_entity_id": "Entity to monitor for presence (e.g., person.chris, device_tracker.iphone)",
           "enable_remote_wake": "Enable wake via remote.send_command (KEY_POWER)",

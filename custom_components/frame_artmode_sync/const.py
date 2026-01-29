@@ -89,7 +89,7 @@ UNKNOWN_BEHAVIOR_TREAT_AS_AWAY = "treat_as_away"
 # Timeouts and limits
 VERIFY_TIMEOUT_TOTAL = 8.0  # seconds
 POWER_TOGGLE_TIMEOUT = 10.0
-CONNECTION_TIMEOUT = 10.0
+CONNECTION_TIMEOUT = 30.0  # Increased from 10.0 to allow TV more time to wake/respond
 COMMAND_TIMEOUT = 5.0
 MAX_WAKE_ATTEMPTS = 2
 MAX_RECENT_EVENTS = 20
@@ -139,6 +139,7 @@ SERVICE_CLEAR_OVERRIDE = "clear_override"
 SERVICE_CLEAR_BREAKER = "clear_breaker"
 SERVICE_REPAIR_APPLE_TV = "repair_apple_tv"
 SERVICE_REPAIR_SAMSUNG_TV = "repair_samsung_tv"
+SERVICE_DELETE_ENTRY = "delete_entry"
 
 # Storage keys
 STORAGE_KEY_TOKEN = "frame_token"

@@ -28,6 +28,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Frame Art Mode Sync from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     
+    # If entry is already loaded, unload it first to prevent conflicts
+    if entry.entry_id in hass.data[DOMAIN]:
+        _LOGGER.warning("Entry %s already loaded, unloading first", entry.entry_id)
+        try:
+            await async_unload_entry(hass, entry)
+        except Exception as ex:
+            _LOGGER.error("Error unloading existing entry %s: %s", entry.entry_id, ex)
+            # Clear it from data anyway
+            hass.data[DOMAIN].pop(entry.entry_id, None)
+    
     # Migrate base_pairing_name from old default "HaCasaArt" to new default "FrameArtSync"
     # Only migrate if stored value exactly matches the old default; preserve user custom values
     old_default = "HaCasaArt"
@@ -76,15 +86,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if entry.entry_id in hass.data[DOMAIN]:
-        manager = hass.data[DOMAIN][entry.entry_id]
-        await manager.async_cleanup()
-        hass.data[DOMAIN].pop(entry.entry_id)
+    try:
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    except Exception as ex:
+        _LOGGER.error("Error unloading platforms for entry %s: %s", entry.entry_id, ex)
+        unload_ok = False
+    
+    # Clean up manager if it exists
+    if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
+        try:
+            manager = hass.data[DOMAIN][entry.entry_id]
+            await manager.async_cleanup()
+            hass.data[DOMAIN].pop(entry.entry_id)
+        except Exception as ex:
+            _LOGGER.error("Error cleaning up manager for entry %s: %s", entry.entry_id, ex)
+            # Still remove from data to prevent further issues
+            if entry.entry_id in hass.data.get(DOMAIN, {}):
+                hass.data[DOMAIN].pop(entry.entry_id, None)
 
     # Clean up services if last entry
     if not hass.data.get(DOMAIN):
-        await async_unload_services(hass)
+        try:
+            await async_unload_services(hass)
+        except Exception as ex:
+            _LOGGER.error("Error unloading services: %s", ex)
         hass.data.pop("_frame_artmode_sync_services_setup", None)
 
     return unload_ok

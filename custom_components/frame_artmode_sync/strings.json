@@ -27,21 +27,28 @@
       },
       "pair_apple_tv": {
         "title": "Pair Apple TV",
-        "description": "A PIN code will be displayed on your Apple TV screen. Enter it below to complete pairing.",
+        "description": "A PIN code will be displayed on your Apple TV screen. Enter it below to complete pairing.\n\nPIN Code: {pin}",
         "data": {
           "pin": "PIN Code"
+        },
+        "description_placeholders": {
+          "pin": "Check your Apple TV screen"
         }
       },
       "options": {
         "title": "Options",
         "data": {
-          "fallback_ha_media_player_entity": "Fallback Media Player Entity",
+          "fallback_ha_media_player_entity": "Apple TV Fallback Media Player Entity",
           "presence_mode": "Presence Mode",
-          "tv_state_source_entity_id": "TV State Source Entity",
+          "tv_state_source_entity_id": "Samsung TV State Source Entity",
           "wake_remote_entity_id": "Wake Remote Entity",
           "presence_entity_id": "Presence Entity",
           "enable_remote_wake": "Enable Remote Wake",
           "enable_wol_fallback": "Enable WOL Fallback"
+        },
+        "data_description": {
+          "fallback_ha_media_player_entity": "Fallback media player entity for Apple TV state when direct connection fails",
+          "tv_state_source_entity_id": "Media player entity for Samsung Frame TV state (e.g., from Samsung TV integration)"
         }
       }
     },

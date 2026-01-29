@@ -16,6 +16,7 @@ from .const import (
     DOMAIN,
     SERVICE_CLEAR_BREAKER,
     SERVICE_CLEAR_OVERRIDE,
+    SERVICE_DELETE_ENTRY,
     SERVICE_FORCE_ART_OFF,
     SERVICE_FORCE_ART_ON,
     SERVICE_FORCE_TV_OFF,
@@ -38,7 +39,43 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         device_registry = dr.async_get(hass)
         entry_ids = set()
 
-        # Resolve targets
+        service = service_call.service
+        
+        # Special handling for delete_entry service
+        if service == SERVICE_DELETE_ENTRY:
+            entry_id = service_call.data.get("entry_id")
+            if not entry_id:
+                _LOGGER.error("delete_entry service requires entry_id")
+                return
+            
+            _LOGGER.info("Force deleting entry %s", entry_id)
+            try:
+                # Try to unload first if loaded
+                if DOMAIN in hass.data and entry_id in hass.data[DOMAIN]:
+                    from . import async_unload_entry
+                    entries = hass.config_entries.async_entries(DOMAIN)
+                    entry = next((e for e in entries if e.entry_id == entry_id), None)
+                    if entry:
+                        try:
+                            await async_unload_entry(hass, entry)
+                        except Exception as ex:
+                            _LOGGER.warning("Error unloading entry %s: %s, proceeding with deletion", entry_id, ex)
+                        # Remove from data
+                        hass.data[DOMAIN].pop(entry_id, None)
+                
+                # Force delete the entry
+                entries = hass.config_entries.async_entries(DOMAIN)
+                entry = next((e for e in entries if e.entry_id == entry_id), None)
+                if entry:
+                    await hass.config_entries.async_remove(entry_id)
+                    _LOGGER.info("Successfully deleted entry %s", entry_id)
+                else:
+                    _LOGGER.warning("Entry %s not found in config entries", entry_id)
+            except Exception as ex:
+                _LOGGER.error("Error deleting entry %s: %s", entry_id, ex)
+            return
+
+        # Resolve targets for other services
         if "device_id" in service_call.data:
             device_id = service_call.data["device_id"]
             device = device_registry.async_get(device_id)
@@ -65,7 +102,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 continue
 
             controller = manager.controller
-            service = service_call.service
 
             try:
                 if service == SERVICE_FORCE_ART_ON:
@@ -182,6 +218,15 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         }),
     )
 
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DELETE_ENTRY,
+        async_handle_service,
+        schema=vol.Schema({
+            vol.Required("entry_id"): str,
+        }),
+    )
+
 
 async def async_unload_services(hass: HomeAssistant) -> None:
     """Unload services."""
@@ -194,4 +239,5 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     hass.services.async_remove(DOMAIN, SERVICE_CLEAR_BREAKER)
     hass.services.async_remove(DOMAIN, SERVICE_REPAIR_APPLE_TV)
     hass.services.async_remove(DOMAIN, SERVICE_REPAIR_SAMSUNG_TV)
+    hass.services.async_remove(DOMAIN, SERVICE_DELETE_ENTRY)
 

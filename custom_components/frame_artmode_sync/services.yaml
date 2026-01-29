@@ -159,3 +159,14 @@ repair_samsung_tv:
       required: false
       selector:
         text:
+
+delete_entry:
+  name: Delete Entry
+  description: Force delete a stuck config entry. This will permanently remove the entry.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Config entry ID to delete (required)
+      required: true
+      selector:
+        text:

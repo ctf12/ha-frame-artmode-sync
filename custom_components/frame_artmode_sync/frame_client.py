@@ -44,11 +44,16 @@ class FrameClient:
     async def async_connect(self, token_callback: Any | None = None) -> bool:
         """Connect to Frame TV."""
         async with self._lock:
+            connect_start_time = asyncio.get_running_loop().time()
             try:
                 if self.token:
-                    _LOGGER.info("Connecting to Frame TV at %s:%d with saved token", self.host, self.port)
+                    _LOGGER.info("Connecting to Frame TV at %s:%d with saved token (timeout=%ds)", 
+                                self.host, self.port, CONNECTION_TIMEOUT)
                 else:
-                    _LOGGER.info("Connecting to Frame TV at %s:%d (no token - pairing may be required)", self.host, self.port)
+                    _LOGGER.info("Connecting to Frame TV at %s:%d (no token - pairing may be required, timeout=%ds)", 
+                                self.host, self.port, CONNECTION_TIMEOUT)
+                _LOGGER.debug("Creating SamsungTVWS object: host=%s, port=%d, token_present=%s, timeout=%ds",
+                             self.host, self.port, self.token is not None, CONNECTION_TIMEOUT)
                 self._tv = SamsungTVWS(
                     host=self.host,
                     port=self.port,
@@ -59,10 +64,15 @@ class FrameClient:
 
                 # Try to connect
                 try:
+                    _LOGGER.debug("Calling start_listening() on TV at %s:%d (timeout=%ds)", 
+                                 self.host, self.port, CONNECTION_TIMEOUT)
+                    listen_start_time = asyncio.get_running_loop().time()
                     await asyncio.wait_for(
                         asyncio.to_thread(self._tv.start_listening),
                         timeout=CONNECTION_TIMEOUT,
                     )
+                    listen_elapsed = asyncio.get_running_loop().time() - listen_start_time
+                    _LOGGER.debug("start_listening() completed successfully in %.2fs", listen_elapsed)
                 except UnauthorizedError:
                     if self.token:
                         _LOGGER.warning("Frame TV rejected saved token - may need to re-pair. Token: %s", self.token[:10] + "..." if len(self.token) > 10 else self.token)
@@ -104,15 +114,27 @@ class FrameClient:
                         raise
 
                 self._connection_failures = 0
-                _LOGGER.info("Connected to Frame TV")
+                connect_elapsed = asyncio.get_running_loop().time() - connect_start_time
+                _LOGGER.info("Connected to Frame TV at %s:%d (took %.2fs)", 
+                            self.host, self.port, connect_elapsed)
                 return True
 
             except asyncio.TimeoutError:
-                _LOGGER.warning("Connection timeout to Frame TV")
+                elapsed = asyncio.get_running_loop().time() - connect_start_time
+                _LOGGER.warning(
+                    "Connection timeout to Frame TV at %s:%d after %.2fs (timeout=%ds). "
+                    "TV may be off, unreachable, or not accepting connections. "
+                    "Check TV power state and network connectivity.",
+                    self.host, self.port, elapsed, CONNECTION_TIMEOUT
+                )
                 self._connection_failures += 1
                 return False
             except Exception as ex:
-                _LOGGER.warning("Failed to connect to Frame TV: %s", ex)
+                elapsed = asyncio.get_running_loop().time() - connect_start_time
+                _LOGGER.warning(
+                    "Failed to connect to Frame TV at %s:%d after %.2fs: %s (%s)",
+                    self.host, self.port, elapsed, ex, type(ex).__name__
+                )
                 self._connection_failures += 1
                 return False
 

@@ -10,7 +10,15 @@ from typing import Callable
 from pyatv import connect, scan, pair
 from pyatv.const import DeviceState, PowerState, Protocol
 from pyatv.core import PushUpdater
-from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
+try:
+    from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
+    PYATV_EXCEPTIONS_AVAILABLE = True
+except ImportError:
+    # Fallback for pyatv versions that don't have these exceptions
+    AuthenticationError = Exception  # type: ignore[assignment, misc]
+    NotPairedError = Exception  # type: ignore[assignment, misc]
+    PairingError = Exception  # type: ignore[assignment, misc]
+    PYATV_EXCEPTIONS_AVAILABLE = False
 from pyatv.interface import AppleTV, Playing, PowerListener, PushListener
 
 from homeassistant.util import dt as dt_util
@@ -164,23 +172,39 @@ class ATVClient:
                     except TypeError:
                         # Fallback for versions that don't accept loop parameter
                         self.atv = await connect(config)
-                except (AuthenticationError, NotPairedError) as auth_ex:
-                    _LOGGER.warning(
-                        "Apple TV at %s requires pairing. "
-                        "Please pair this device using the Home Assistant Apple TV integration first, "
-                        "or use 'atvremote pair' command. Error: %s",
-                        self.host, auth_ex
-                    )
-                    # Note: We could implement pairing here, but it's better to use HA's Apple TV integration
-                    # or atvremote for initial pairing, then this integration can connect
-                    return False
-                except PairingError as pair_ex:
-                    _LOGGER.warning(
-                        "Apple TV pairing error at %s: %s. "
-                        "Device may need to be re-paired.",
-                        self.host, pair_ex
-                    )
-                    return False
+                except Exception as conn_ex:
+                    # Check if it's an authentication/pairing error
+                    is_auth_error = False
+                    is_pairing_error = False
+                    
+                    if PYATV_EXCEPTIONS_AVAILABLE:
+                        is_auth_error = isinstance(conn_ex, (AuthenticationError, NotPairedError))
+                        is_pairing_error = isinstance(conn_ex, PairingError)
+                    else:
+                        # Fallback: check error message if exceptions not available
+                        error_str = str(conn_ex).lower()
+                        is_auth_error = "not paired" in error_str or "authentication" in error_str
+                        is_pairing_error = "pairing" in error_str and not is_auth_error
+                    
+                    if is_auth_error:
+                        _LOGGER.warning(
+                            "Apple TV at %s requires pairing. "
+                            "Please pair this device using the Home Assistant Apple TV integration first, "
+                            "or use 'atvremote pair' command. Error: %s",
+                            self.host, conn_ex
+                        )
+                        # Note: We could implement pairing here, but it's better to use HA's Apple TV integration
+                        # or atvremote for initial pairing, then this integration can connect
+                        return False
+                    elif is_pairing_error:
+                        _LOGGER.warning(
+                            "Apple TV pairing error at %s: %s. "
+                            "Device may need to be re-paired.",
+                            self.host, conn_ex
+                        )
+                        return False
+                    # If not an auth/pairing error, continue to general error handling below
+                    raise conn_ex
                 
                 self.push_updater = self.atv.push_updater
 
@@ -317,22 +341,32 @@ class ATVClient:
 
         try:
             _LOGGER.debug("Updating ATV state from device at %s", self.host)
-            power = self.atv.power
-            playing = self.atv.media_playing
+            power = getattr(self.atv, 'power', None)
+            # Try to get playing interface - may not be available on all pyatv versions
+            playing = getattr(self.atv, 'playing', None)
 
             old_power_state = self._power_state
             old_playback_state = self._playback_state
             
             if power:
-                self._power_state = await power.power_state
-                if self._power_state != old_power_state:
-                    _LOGGER.info("ATV power state changed: %s -> %s", old_power_state, self._power_state)
+                try:
+                    self._power_state = await power.power_state
+                    if self._power_state != old_power_state:
+                        _LOGGER.info("ATV power state changed: %s -> %s", old_power_state, self._power_state)
+                except Exception as ex:
+                    _LOGGER.debug("Error getting power state: %s", ex)
 
             if playing:
-                playing_info = await playing.get_playing()
-                self._playback_state = self._playback_state_from_playing(playing_info)
-                if self._playback_state != old_playback_state:
-                    _LOGGER.info("ATV playback state changed: %s -> %s", old_playback_state, self._playback_state)
+                try:
+                    playing_info = await playing.get_playing()
+                    self._playback_state = self._playback_state_from_playing(playing_info)
+                    if self._playback_state != old_playback_state:
+                        _LOGGER.info("ATV playback state changed: %s -> %s", old_playback_state, self._playback_state)
+                except Exception as ex:
+                    _LOGGER.debug("Error getting playing state: %s", ex)
+            else:
+                # If playing interface is not available, state will come from push updates
+                _LOGGER.debug("Playing interface not available, will rely on push updates for playback state")
 
             old_active = self._current_state
             active = self._compute_active()

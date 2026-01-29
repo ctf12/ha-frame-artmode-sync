@@ -39,6 +39,7 @@ from .const import (
     DEFAULT_WOL_RETRIES,
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_DRIFT_CORRECTION_COOLDOWN_MINUTES,
+    DEFAULT_BREAKER_COOLDOWN_MINUTES,
     DEFAULT_MAX_COMMANDS_PER_5MIN,
     DEFAULT_MAX_DRIFT_CORRECTIONS_PER_HOUR,
     DEFAULT_MOTION_DETECTION_GRACE_MINUTES,
@@ -424,28 +425,30 @@ class PairController:
 
     async def _handle_atv_state_change(self, active: bool, playback_state: str) -> None:
         """Handle Apple TV state change (async)."""
-        old_active = self._atv_active
-        self._atv_active = active
-        self._atv_playback_state = playback_state
+        
+        # CRITICAL FIX: Update state and cancel task within lock to prevent race conditions
+        async with self._lock:
+            old_active = self._atv_active
+            self._atv_active = active
+            self._atv_playback_state = playback_state
 
-        _LOGGER.info("[atv_state_change] ATV state changed: active=%s -> %s, playback=%s", 
-                    old_active, active, playback_state)
+            _LOGGER.info("[atv_state_change] ATV state changed: active=%s -> %s, playback=%s", 
+                        old_active, active, playback_state)
 
-        if old_active != active:
-            # Cancel return-to-art timer if ATV became active
-            # Cancel without awaiting to avoid deadlock if task is waiting for lock
-            if active and self._return_to_art_task:
-                _LOGGER.debug("[atv_state_change] ATV became active, cancelling return-to-art timer")
-                self._return_to_art_task.cancel()
-                self._return_to_art_task = None
+            if old_active != active:
+                # Cancel return-to-art timer if ATV became active (now within lock)
+                if active and self._return_to_art_task:
+                    _LOGGER.debug("[atv_state_change] ATV became active, cancelling return-to-art timer")
+                    self._return_to_art_task.cancel()
+                    self._return_to_art_task = None
 
-            trigger = EVENT_TYPE_ATV_ON if active else EVENT_TYPE_ATV_OFF
-            self._last_trigger = trigger
-            self._log_event(trigger, ACTION_RESULT_SUCCESS, f"ATV {'activated' if active else 'deactivated'}")
-            _LOGGER.info("[atv_state_change] Triggering enforcement due to ATV state change")
-            await self._compute_and_enforce()
-        else:
-            _LOGGER.debug("[atv_state_change] ATV active state unchanged (%s), skipping enforcement", active)
+                trigger = EVENT_TYPE_ATV_ON if active else EVENT_TYPE_ATV_OFF
+                self._last_trigger = trigger
+                self._log_event(trigger, ACTION_RESULT_SUCCESS, f"ATV {'activated' if active else 'deactivated'}")
+                # Call locked version directly since we already hold the lock
+                await self._compute_and_enforce_locked(trigger=trigger)
+            else:
+                _LOGGER.debug("[atv_state_change] ATV active state unchanged (%s), skipping enforcement", active)
 
     @callback
     def _on_presence_changed(self, event: Event) -> None:
@@ -463,12 +466,13 @@ class PairController:
         start_time = normalize_time(start_str) or parse_time_string(start_str)
         end_time = normalize_time(end_str) or parse_time_string(end_str)
 
-        now = dt_util.utcnow()
+        # Use local time (not UTC) since active hours are specified in local timezone
+        now = dt_util.now()
         was_in_hours = self._in_active_hours
         self._in_active_hours = is_time_in_window(now, start_time, end_time)
 
-        _LOGGER.debug("Active hours check: now=%s, window=%s-%s, in_active_hours=%s", 
-                     now.strftime("%H:%M:%S"), start_time, end_time, self._in_active_hours)
+        _LOGGER.debug("Active hours check: now=%s (local), window=%s-%s, in_active_hours=%s", 
+                     now.strftime("%H:%M:%S %Z"), start_time, end_time, self._in_active_hours)
 
         if was_in_hours != self._in_active_hours:
             _LOGGER.info("Active hours changed: %s -> %s (window: %s-%s)", 
@@ -1152,7 +1156,7 @@ class PairController:
                     if sock:
                         try:
                             sock.close()
-                        except Exception:
+                        except Exception as close_ex:
                             pass  # Ignore errors closing socket
                     continue
         except Exception as ex:
@@ -1608,7 +1612,13 @@ class PairController:
                 # Re-pair using pyatv
                 from pyatv import scan, pair, connect
                 from pyatv.const import Protocol
-                from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
+                try:
+                    from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
+                except ImportError:
+                    # Fallback for pyatv versions that don't have these exceptions
+                    AuthenticationError = Exception  # type: ignore[assignment, misc]
+                    NotPairedError = Exception  # type: ignore[assignment, misc]
+                    PairingError = Exception  # type: ignore[assignment, misc]
                 
                 loop = asyncio.get_running_loop()
                 results = None
