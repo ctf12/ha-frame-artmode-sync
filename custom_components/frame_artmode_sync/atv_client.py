@@ -66,26 +66,70 @@ class ATVClient:
         async with self._lock:
             try:
                 loop = asyncio.get_running_loop()
+                results = None
                 
-                # pyatv compatibility: some versions require loop parameter
+                _LOGGER.info("Scanning for Apple TV at %s (identifier=%s)", self.host, self.identifier)
+                
+                # Try targeted scan first (faster if device is awake)
                 try:
                     if self.identifier:
-                        results = await scan(loop=loop, identifier=self.identifier, timeout=5)
+                        _LOGGER.debug("Scanning by identifier: %s", self.identifier)
+                        try:
+                            results = await scan(loop=loop, identifier=self.identifier, timeout=10)
+                        except TypeError:
+                            results = await scan(identifier=self.identifier, timeout=10)
                     else:
-                        results = await scan(loop=loop, hosts=[self.host], timeout=5)
-                except TypeError:
-                    # Fallback for versions that don't accept loop parameter
-                    if self.identifier:
-                        results = await scan(identifier=self.identifier, timeout=5)
-                    else:
-                        results = await scan(hosts=[self.host], timeout=5)
+                        _LOGGER.debug("Scanning by host: %s", self.host)
+                        try:
+                            results = await scan(loop=loop, hosts=[self.host], timeout=10)
+                        except TypeError:
+                            results = await scan(hosts=[self.host], timeout=10)
+                except Exception as scan_ex:
+                    _LOGGER.debug("Targeted scan failed: %s", scan_ex)
+                    results = None
+
+                # If targeted scan failed, try network-wide scan (device might be sleeping)
+                if not results:
+                    _LOGGER.info("Targeted scan found nothing, trying network-wide scan (device may be sleeping)...")
+                    try:
+                        try:
+                            results = await scan(loop=loop, timeout=15)
+                        except TypeError:
+                            results = await scan(timeout=15)
+                        
+                        # Filter results to find our device
+                        if results:
+                            matching = []
+                            for atv in results:
+                                if self.identifier and str(atv.identifier) == self.identifier:
+                                    matching.append(atv)
+                                elif str(atv.address) == self.host:
+                                    matching.append(atv)
+                            
+                            if matching:
+                                results = matching
+                                _LOGGER.info("Found Apple TV in network scan: %s at %s", 
+                                           results[0].name, results[0].address)
+                            else:
+                                _LOGGER.debug("Network scan found %d devices, but none match %s/%s", 
+                                            len(results), self.host, self.identifier)
+                                results = None
+                    except Exception as network_scan_ex:
+                        _LOGGER.debug("Network-wide scan also failed: %s", network_scan_ex)
+                        results = None
 
                 if not results:
-                    _LOGGER.warning("No Apple TV found at %s", self.host)
+                    _LOGGER.warning(
+                        "No Apple TV found at %s (identifier=%s). "
+                        "Device may be sleeping or not responding to discovery. "
+                        "Will retry automatically.",
+                        self.host, self.identifier
+                    )
                     return False
 
                 config = results[0]
-                _LOGGER.info("Connecting to Apple TV: %s", config.name)
+                _LOGGER.info("Found Apple TV: %s at %s (identifier: %s)", 
+                           config.name, config.address, config.identifier)
 
                 # pyatv compatibility: some versions require loop parameter
                 try:
