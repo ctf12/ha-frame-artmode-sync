@@ -214,27 +214,42 @@ class ATVClient:
     async def _update_state(self) -> None:
         """Update state from Apple TV."""
         if not self.atv:
+            _LOGGER.debug("Cannot update ATV state: not connected")
             return
 
         try:
+            _LOGGER.debug("Updating ATV state from device at %s", self.host)
             power = self.atv.power
             playing = self.atv.media_playing
 
+            old_power_state = self._power_state
+            old_playback_state = self._playback_state
+            
             if power:
                 self._power_state = await power.power_state
+                if self._power_state != old_power_state:
+                    _LOGGER.info("ATV power state changed: %s -> %s", old_power_state, self._power_state)
 
             if playing:
                 playing_info = await playing.get_playing()
                 self._playback_state = self._playback_state_from_playing(playing_info)
+                if self._playback_state != old_playback_state:
+                    _LOGGER.info("ATV playback state changed: %s -> %s", old_playback_state, self._playback_state)
 
+            old_active = self._current_state
             active = self._compute_active()
+            _LOGGER.debug("ATV active computation: power=%s, playback=%s, active_mode=%s -> active=%s", 
+                         self._power_state, self._playback_state, self.active_mode, active)
+            
             if active != self._current_state:
+                _LOGGER.info("ATV active state changed: %s -> %s (playback=%s, power=%s)", 
+                           old_active, active, self._playback_state, self._power_state)
                 await self._set_state(active, self._playback_state)
             else:
                 self._last_update = dt_util.utcnow()
 
         except Exception as ex:
-            _LOGGER.debug("Error updating state: %s", ex)
+            _LOGGER.warning("Error updating ATV state: %s", ex)
 
     def _playback_state_from_playing(self, playing: Playing | None) -> str:
         """Get playback state string from Playing object."""
@@ -283,14 +298,20 @@ class ATVClient:
                 if not self.atv and not self._grace_until:
                     return  # Disconnected and grace expired
 
+                old_state = self._current_state
                 self._current_state = active
                 self._playback_state = playback_state
                 self._last_update = dt_util.utcnow()
 
-                if self.state_callback:
-                    self.state_callback(active, playback_state)
+                if old_state != active:
+                    _LOGGER.info("ATV state transition: %s -> %s (playback=%s, power=%s)", 
+                               old_state, active, playback_state, self._power_state)
+                else:
+                    _LOGGER.debug("ATV state unchanged: active=%s, playback=%s", active, playback_state)
 
-                _LOGGER.info("ATV state: active=%s, playback=%s", active, playback_state)
+                if self.state_callback:
+                    _LOGGER.debug("Calling state callback with active=%s, playback=%s", active, playback_state)
+                    self.state_callback(active, playback_state)
             except asyncio.CancelledError:
                 pass  # Expected when cancelled
 

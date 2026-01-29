@@ -397,17 +397,24 @@ class PairController:
         self._atv_active = active
         self._atv_playback_state = playback_state
 
+        _LOGGER.info("[atv_state_change] ATV state changed: active=%s -> %s, playback=%s", 
+                    old_active, active, playback_state)
+
         if old_active != active:
             # Cancel return-to-art timer if ATV became active
             # Cancel without awaiting to avoid deadlock if task is waiting for lock
             if active and self._return_to_art_task:
+                _LOGGER.debug("[atv_state_change] ATV became active, cancelling return-to-art timer")
                 self._return_to_art_task.cancel()
                 self._return_to_art_task = None
 
             trigger = EVENT_TYPE_ATV_ON if active else EVENT_TYPE_ATV_OFF
             self._last_trigger = trigger
             self._log_event(trigger, ACTION_RESULT_SUCCESS, f"ATV {'activated' if active else 'deactivated'}")
+            _LOGGER.info("[atv_state_change] Triggering enforcement due to ATV state change")
             await self._compute_and_enforce()
+        else:
+            _LOGGER.debug("[atv_state_change] ATV active state unchanged (%s), skipping enforcement", active)
 
     @callback
     def _on_presence_changed(self, event: Event) -> None:
@@ -429,7 +436,12 @@ class PairController:
         was_in_hours = self._in_active_hours
         self._in_active_hours = is_time_in_window(now, start_time, end_time)
 
+        _LOGGER.debug("Active hours check: now=%s, window=%s-%s, in_active_hours=%s", 
+                     now.strftime("%H:%M:%S"), start_time, end_time, self._in_active_hours)
+
         if was_in_hours != self._in_active_hours:
+            _LOGGER.info("Active hours changed: %s -> %s (window: %s-%s)", 
+                        was_in_hours, self._in_active_hours, start_time, end_time)
             self._last_trigger = EVENT_TYPE_TIME_WINDOW_CHANGE
             self._log_event(
                 EVENT_TYPE_TIME_WINDOW_CHANGE,
@@ -441,20 +453,24 @@ class PairController:
         """Update presence state (must be called within lock context)."""
         if not self._presence_entity_id:
             self._home_ok = None
+            _LOGGER.debug("No presence entity configured, home_ok=None")
             return
 
         try:
             old_home_ok = self._home_ok
             state_obj = self.hass.states.get(self._presence_entity_id)
             if not state_obj:
+                _LOGGER.debug("Presence entity %s not found or unavailable", self._presence_entity_id)
                 self._home_ok = None
                 # Trigger if state changed from known to unknown
                 # Use locked version since we're called from within lock
                 if old_home_ok is not None and trigger:
+                    _LOGGER.info("Presence changed: %s -> None (entity unavailable)", old_home_ok)
                     await self._compute_and_enforce_locked(trigger=trigger)
                 return
 
             state = state_obj.state.lower()
+            _LOGGER.debug("Presence entity %s state: %s", self._presence_entity_id, state_obj.state)
             home_states = [
                 s.strip().lower()
                 for s in self.config.get("home_states", "home,on,true,True").split(",")
@@ -466,26 +482,38 @@ class PairController:
 
             if state in home_states:
                 self._home_ok = True
+                if old_home_ok != self._home_ok:
+                    _LOGGER.info("Presence changed: %s -> True (home) via entity %s", old_home_ok, self._presence_entity_id)
                 if old_home_ok != self._home_ok and trigger:
                     await self._compute_and_enforce_locked(trigger=trigger)
             elif state in away_states:
                 self._home_ok = False
+                if old_home_ok != self._home_ok:
+                    _LOGGER.info("Presence changed: %s -> False (away) via entity %s", old_home_ok, self._presence_entity_id)
                 if old_home_ok != self._home_ok and trigger:
                     await self._compute_and_enforce_locked(trigger=trigger)
             else:
                 # Unknown state
                 unknown_behavior = self.config.get("unknown_behavior", "ignore")
+                _LOGGER.debug("Presence entity %s has unknown state '%s', behavior=%s", 
+                            self._presence_entity_id, state_obj.state, unknown_behavior)
                 if unknown_behavior == "treat_as_home":
                     self._home_ok = True
+                    if old_home_ok != self._home_ok:
+                        _LOGGER.info("Presence changed: %s -> True (treat_as_home) via entity %s", old_home_ok, self._presence_entity_id)
                     if old_home_ok != self._home_ok and trigger:
                         await self._compute_and_enforce_locked(trigger=trigger)
                 elif unknown_behavior == "treat_as_away":
                     self._home_ok = False
+                    if old_home_ok != self._home_ok:
+                        _LOGGER.info("Presence changed: %s -> False (treat_as_away) via entity %s", old_home_ok, self._presence_entity_id)
                     if old_home_ok != self._home_ok and trigger:
                         await self._compute_and_enforce_locked(trigger=trigger)
                 else:
                     # ignore - set to None
                     self._home_ok = None
+                    if old_home_ok != self._home_ok:
+                        _LOGGER.info("Presence changed: %s -> None (ignore unknown) via entity %s", old_home_ok, self._presence_entity_id)
                     # Trigger if state changed from known to unknown
                     if old_home_ok is not None and trigger:
                         await self._compute_and_enforce_locked(trigger=trigger)
@@ -531,6 +559,13 @@ class PairController:
             unknown_behavior=self.config.get("unknown_behavior", "ignore"),
         )
 
+        if desired != self._desired_mode:
+            _LOGGER.info("Desired mode changed: %s -> %s (atv_active=%s, in_active_hours=%s, home_ok=%s, trigger=%s)", 
+                        self._desired_mode, desired, self._atv_active, self._in_active_hours, self._home_ok, trigger)
+        else:
+            _LOGGER.debug("Desired mode unchanged: %s (atv_active=%s, in_active_hours=%s, home_ok=%s)", 
+                         desired, self._atv_active, self._in_active_hours, self._home_ok)
+
         self._desired_mode = desired
 
         # Check if we should enforce (use monotonic time for duration)
@@ -575,6 +610,7 @@ class PairController:
         previous_was_atv = self._previous_desired_mode == MODE_ATV
         if desired == MODE_ART and not self._atv_active and previous_was_atv:
             # ATV just turned off, schedule delayed return
+            _LOGGER.info("[enforce] ATV turned off, scheduling delayed return to Art Mode")
             await self._schedule_return_to_art()
             self._previous_desired_mode = desired
             return
@@ -593,14 +629,18 @@ class PairController:
     def _should_enforce(self) -> bool:
         """Check if we should enforce (cooldown, startup grace, etc.)."""
         if self._startup_grace_task and not self._startup_grace_task.done():
+            _LOGGER.debug("[enforce] Enforcement blocked: still in startup grace period")
             return False  # Still in startup grace
 
         # Use monotonic time for cooldown check (resilient to clock changes)
         if self._cooldown_until_monotonic is not None:
             loop = asyncio.get_running_loop()
             if loop.time() < self._cooldown_until_monotonic:
+                remaining = int(self._cooldown_until_monotonic - loop.time())
+                _LOGGER.debug("[enforce] Enforcement blocked: cooldown active (%ds remaining)", remaining)
                 return False  # In cooldown
             # Cooldown expired, clear it
+            _LOGGER.debug("[enforce] Cooldown expired, clearing")
             self._cooldown_until_monotonic = None
             self._cooldown_until = None
 
@@ -630,12 +670,16 @@ class PairController:
 
     async def _enforce_desired_mode(self, desired: str) -> None:
         """Enforce desired mode with safety checks (must be called within lock)."""
+        _LOGGER.debug("[enforce] _enforce_desired_mode called with desired=%s", desired)
+        
         if not self._enabled:
+            _LOGGER.info("[enforce] Enforcement blocked: integration disabled")
             self._phase = PHASE_IDLE
             await self._fire_event()
             return
 
         if self.config.get("dry_run", False):
+            _LOGGER.info("[enforce] DRY RUN: Would set %s (no actual command sent)", desired)
             self._phase = PHASE_DRY_RUN
             self._log_event(EVENT_TYPE_MANUAL, ACTION_RESULT_SUCCESS, f"DRY RUN: Would set {desired}")
             await self._fire_event()
@@ -643,6 +687,7 @@ class PairController:
 
         # Check breaker (manual services bypass this, but they call enforce_desired_mode directly)
         if self._breaker_open:
+            _LOGGER.warning("[enforce] Enforcement blocked: circuit breaker open")
             self._phase = PHASE_BREAKER_OPEN
             self._log_event(EVENT_TYPE_MANUAL, ACTION_RESULT_FAIL, "Enforcement blocked: circuit breaker open")
             await self._fire_event()
@@ -656,22 +701,30 @@ class PairController:
                 remaining = int(self._connection_backoff_until_monotonic - now_monotonic)
                 # Rate-limit: only log this event once per backoff period (check if already logged)
                 if self._last_backoff_log_time != self._connection_backoff_until_monotonic:
+                    _LOGGER.info("[enforce] Enforcement blocked: connection backoff active (%ds remaining)", remaining)
                     self._log_event(EVENT_TYPE_MANUAL, ACTION_RESULT_FAIL, f"Enforcement blocked: connection backoff active ({remaining}s remaining)")
                     self._last_backoff_log_time = self._connection_backoff_until_monotonic
                 await self._fire_event()
                 return
             else:
                 # Backoff expired, clear it
+                _LOGGER.debug("[enforce] Connection backoff expired, clearing")
                 self._connection_backoff_until_monotonic = None
                 self._connection_backoff_until = None
                 self._last_backoff_log_time = None
 
         # Check TV reachability and state
+        _LOGGER.debug("Checking TV reachability and state...")
         tv_reachable = await self._check_tv_reachable()
         tv_state = await self._get_tv_state()
+        _LOGGER.info("TV state check: reachable=%s, entity_state=%s", tv_reachable, tv_state)
         
         # Read actual state (may trigger connection)
+        _LOGGER.debug("Reading actual Art Mode state from TV...")
         actual_artmode = await self.frame_client.async_get_artmode()
+        _LOGGER.info("Actual Art Mode state: %s (desired=%s)", 
+                    "ON" if actual_artmode is True else ("OFF" if actual_artmode is False else "UNKNOWN"), 
+                    desired)
         
         # Wake sequence: Try remote wake first, then WOL fallback only if remote fails AND TV is unreachable
         wake_attempted = False
@@ -775,6 +828,7 @@ class PairController:
         # Idempotency check
         if desired == MODE_ART and actual_artmode is True:
             # Already correct
+            _LOGGER.info("No action needed: desired=ART, actual=ON (already in Art Mode)")
             self._phase = PHASE_IDLE
             self._last_action = ACTION_NONE
             await self._fire_event()
@@ -782,6 +836,7 @@ class PairController:
 
         if desired == MODE_OFF and actual_artmode is False:
             # Check if TV is actually off (best effort)
+            _LOGGER.info("No action needed: desired=OFF, actual=OFF (TV already off)")
             self._phase = PHASE_IDLE
             self._last_action = ACTION_NONE
             await self._fire_event()
@@ -789,6 +844,7 @@ class PairController:
 
         if desired == MODE_ATV and actual_artmode is False:
             # TV is on, Art Mode is off - check if we need to switch input
+            _LOGGER.info("TV already on (Art Mode OFF), checking if input switch needed (desired=ATV)")
             self._phase = PHASE_IDLE
             self._last_action = ACTION_NONE
             # Still try to switch input if needed
@@ -797,38 +853,57 @@ class PairController:
             return
 
         # Need to change state
+        _LOGGER.info("State change required: desired=%s, actual=%s -> sending command", 
+                    desired, "ON" if actual_artmode is True else ("OFF" if actual_artmode is False else "UNKNOWN"))
         if desired == MODE_ART:
             self._phase = PHASE_RETURNING_TO_ART
+            _LOGGER.info("Enforcing ART mode: calling async_force_art_on()")
             success, action = await self.frame_client.async_force_art_on()
+            _LOGGER.info("Art Mode ON command result: success=%s, action=%s", success, action)
             self._last_action = ACTION_SET_ART_ON if success else action
             self._last_action_result = ACTION_RESULT_SUCCESS if success else ACTION_RESULT_FAIL
             if not success:
                 self._last_error = f"Failed to set Art Mode on: {action}"
                 self._command_fail_count += 1
+                _LOGGER.warning("Failed to set Art Mode ON: %s", action)
+            else:
+                _LOGGER.info("Art Mode ON command succeeded, verifying state...")
 
         elif desired == MODE_OFF:
             self._phase = PHASE_IDLE
+            _LOGGER.info("Enforcing OFF mode: calling async_set_artmode(False)")
             success = await self.frame_client.async_set_artmode(False)
+            _LOGGER.info("Art Mode OFF command result: success=%s", success)
             if success:
                 # Try to turn TV off (best effort)
+                _LOGGER.debug("Art Mode OFF succeeded, attempting power toggle to turn TV off")
                 await self.frame_client.async_power_toggle()
             self._last_action = ACTION_TV_OFF
             self._last_action_result = ACTION_RESULT_SUCCESS if success else ACTION_RESULT_FAIL
+            if not success:
+                _LOGGER.warning("Failed to set Art Mode OFF")
 
         elif desired == MODE_ATV:
             self._phase = PHASE_SWITCHING_TO_ATV
+            _LOGGER.info("Enforcing ATV mode: calling async_force_art_off()")
             success, action = await self.frame_client.async_force_art_off()
+            _LOGGER.info("Art Mode OFF command result (for ATV): success=%s, action=%s", success, action)
             if success:
+                _LOGGER.debug("Art Mode OFF succeeded, switching to ATV input")
                 await self._switch_to_atv_input()
             self._last_action = ACTION_SET_ART_OFF if success else action
             self._last_action_result = ACTION_RESULT_SUCCESS if success else ACTION_RESULT_FAIL
+            if not success:
+                _LOGGER.warning("Failed to set Art Mode OFF (for ATV mode): %s", action)
 
         self._last_action_ts = dt_util.utcnow()
         self._record_command()
 
         if self._last_action_result == ACTION_RESULT_FAIL:
+            _LOGGER.warning("[enforce] Command failed: action=%s, error=%s", self._last_action, self._last_error)
             await self._handle_command_failure()
         else:
+            _LOGGER.info("[enforce] Command succeeded: action=%s, desired=%s", self._last_action, desired)
             self._connection_backoff_delay = BACKOFF_INITIAL
             self._connection_backoff_until_monotonic = None
             self._connection_backoff_until = None
@@ -840,6 +915,7 @@ class PairController:
                 loop = asyncio.get_running_loop()
                 self._cooldown_until_monotonic = loop.time() + cooldown_seconds
                 self._cooldown_until = dt_util.utcnow() + timedelta(seconds=cooldown_seconds)
+                _LOGGER.debug("[enforce] Cooldown set for %d seconds", cooldown_seconds)
 
         await self._fire_event()
 
@@ -847,10 +923,16 @@ class PairController:
         """Switch to Apple TV input (best effort)."""
         input_mode = self.config.get("input_mode", INPUT_MODE_HDMI1)
         if input_mode == INPUT_MODE_NONE:
+            _LOGGER.debug("Input switching disabled (input_mode=none)")
             return
 
         if input_mode in ("hdmi1", "hdmi2", "hdmi3"):
-            await self.frame_client.async_set_source(input_mode)
+            _LOGGER.info("Switching TV input to %s for ATV", input_mode.upper())
+            success = await self.frame_client.async_set_source(input_mode)
+            if success:
+                _LOGGER.info("TV input switched to %s successfully", input_mode.upper())
+            else:
+                _LOGGER.warning("Failed to switch TV input to %s", input_mode.upper())
 
     async def _handle_command_failure(self) -> None:
         """Handle command failure with backoff and breaker."""
@@ -988,6 +1070,7 @@ class PairController:
         
         Important: "off" state is NOT treated as unreachable.
         """
+        _LOGGER.debug("Checking TV reachability...")
         # Method 1: Check TV state source entity (most reliable if configured)
         if self.tv_state_source_entity_id:
             state = self.hass.states.get(self.tv_state_source_entity_id)
@@ -995,13 +1078,18 @@ class PairController:
                 # If entity exists and is not "unavailable", TV is reachable
                 # Even if state is "off", the TV is reachable (just powered off)
                 if state.state != "unavailable":
+                    _LOGGER.debug("TV reachable via entity %s (state=%s)", self.tv_state_source_entity_id, state.state)
                     return True
+                else:
+                    _LOGGER.debug("TV entity %s reports unavailable", self.tv_state_source_entity_id)
         
         # Method 2: Try TCP connection to TV ports (fast check)
         try:
             # Try port 8002 first (default), then 8001
             for port in [self.frame_client.port, 8001]:
+                sock = None
                 try:
+                    _LOGGER.debug("Trying TCP connection to %s:%d", self.frame_client.host, port)
                     # Use asyncio.wait_for with short timeout to avoid blocking
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     sock.settimeout(1.0)  # 1 second timeout
@@ -1010,20 +1098,31 @@ class PairController:
                         timeout=1.0
                     )
                     sock.close()
+                    _LOGGER.debug("TV reachable via TCP connection to %s:%d", self.frame_client.host, port)
                     return True
-                except (socket.error, asyncio.TimeoutError, OSError):
+                except (socket.error, asyncio.TimeoutError, OSError) as ex:
+                    _LOGGER.debug("TCP connection to %s:%d failed: %s", self.frame_client.host, port, ex)
+                    if sock:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass  # Ignore errors closing socket
                     continue
         except Exception as ex:
             _LOGGER.debug("TCP reachability check failed: %s", ex)
         
         # Method 3: Fallback to websocket connection (slower but definitive)
         try:
+            _LOGGER.debug("Trying websocket connection to verify TV reachability...")
             artmode = await asyncio.wait_for(
                 self.frame_client.async_get_artmode(),
                 timeout=3.0  # 3 second timeout
             )
-            return artmode is not None
-        except (asyncio.TimeoutError, Exception):
+            reachable = artmode is not None
+            _LOGGER.debug("TV reachable via websocket: %s (artmode=%s)", reachable, artmode)
+            return reachable
+        except (asyncio.TimeoutError, Exception) as ex:
+            _LOGGER.debug("Websocket reachability check failed: %s", ex)
             return False
     
     async def _get_tv_state(self) -> str | None:
@@ -1031,7 +1130,12 @@ class PairController:
         if self.tv_state_source_entity_id:
             state = self.hass.states.get(self.tv_state_source_entity_id)
             if state:
+                _LOGGER.debug("TV state from entity %s: %s", self.tv_state_source_entity_id, state.state)
                 return state.state
+            else:
+                _LOGGER.debug("TV state entity %s not found or unavailable", self.tv_state_source_entity_id)
+        else:
+            _LOGGER.debug("No TV state source entity configured")
         return None
     
     async def _attempt_remote_wake(self) -> bool:
@@ -1204,8 +1308,11 @@ class PairController:
             return
 
         # Read actual state
+        _LOGGER.debug("[resync] Reading actual Art Mode state...")
         actual = await self.frame_client.async_get_artmode()
         self._actual_artmode = actual
+        _LOGGER.info("[resync] Actual Art Mode state: %s", 
+                    "ON" if actual is True else ("OFF" if actual is False else "UNKNOWN"))
 
         # Recompute desired (update helper methods, don't trigger enforcement recursively)
         await self._update_active_hours()
@@ -1219,15 +1326,24 @@ class PairController:
             away_policy=self.config.get("away_policy", "disabled"),
             unknown_behavior=self.config.get("unknown_behavior", "ignore"),
         )
+        _LOGGER.info("[resync] Desired mode: %s (atv_active=%s, in_active_hours=%s)", 
+                    desired, self._atv_active, self._in_active_hours)
 
         # Check drift
         drift = False
         if desired == MODE_ART and actual is not True:
             drift = True
+            _LOGGER.warning("[resync] DRIFT DETECTED: desired=ART, actual=%s", 
+                          "ON" if actual is True else ("OFF" if actual is False else "UNKNOWN"))
         elif desired == MODE_ATV and actual is True:
             drift = True
+            _LOGGER.warning("[resync] DRIFT DETECTED: desired=ATV, actual=ON (should be OFF)")
         elif desired == MODE_OFF and actual is not False:
             drift = True
+            _LOGGER.warning("[resync] DRIFT DETECTED: desired=OFF, actual=%s", 
+                          "ON" if actual is True else ("OFF" if actual is False else "UNKNOWN"))
+        else:
+            _LOGGER.debug("[resync] No drift: desired=%s matches actual=%s", desired, actual)
 
         if drift:
             # Track consecutive drifts (likely manual user action)
@@ -1276,8 +1392,12 @@ class PairController:
             # Only enforce if not in override (use 'now' variable for consistency)
             override_until_check = normalize_datetime(self._manual_override_until)
             if not override_until_check or now >= override_until_check:
+                _LOGGER.info("[resync] Enforcing desired mode %s due to drift", desired)
                 await self._enforce_desired_mode(desired)
+            else:
+                _LOGGER.info("[resync] Drift detected but override active, skipping enforcement")
         else:
+            _LOGGER.debug("[resync] No drift detected, state matches desired")
             self._last_action = ACTION_RESYNC
             self._last_action_result = ACTION_RESULT_SUCCESS
             await self._fire_event()
