@@ -305,7 +305,7 @@ class PairController:
         try:
             await asyncio.wait_for(
                 self.frame_client.async_connect(token_callback=token_save_callback),
-                timeout=15.0
+                timeout=20.0
             )
         except asyncio.TimeoutError:
             _LOGGER.warning("Frame TV connection timed out")
@@ -313,13 +313,22 @@ class PairController:
             _LOGGER.warning("Frame TV connection failed: %s", ex)
         
         # Connect Apple TV (with timeout)
+        # Increased timeout to 35s to allow for:
+        # - Targeted scan: 10s
+        # - Network-wide scan fallback: 15s
+        # - Connection establishment: ~5s
+        # - Buffer: ~5s
         try:
             await asyncio.wait_for(
                 self.atv_client.async_connect(),
-                timeout=15.0
+                timeout=35.0
             )
         except asyncio.TimeoutError:
-            _LOGGER.warning("Apple TV connection timed out")
+            _LOGGER.warning(
+                "Apple TV connection timed out after 35s. "
+                "Device may be sleeping or unreachable. "
+                "Will continue to retry in background."
+            )
         except Exception as ex:
             _LOGGER.warning("Apple TV connection failed: %s", ex)
 
