@@ -287,6 +287,27 @@ For issues, feature requests, or questions:
 
 ## Preflight + Deploy
 
+### Check for Dependency Updates
+
+Before deploying, check if dependencies (`pyatv`, `samsungtvws`, `wakeonlan`) have updates available:
+
+```bash
+python3 scripts/check_dependencies.py
+```
+
+This script:
+- Checks the latest versions from GitHub releases and PyPI
+- Compares with versions in `manifest.json`
+- Reports which dependencies have updates available
+- Provides links to changelogs for review
+
+**Note**: Before updating dependencies:
+1. Review changelogs for breaking changes
+2. Test the integration with new versions
+3. Update `manifest.json` with new version requirements (e.g., `"pyatv>=0.15.0"`)
+
+### Preflight Checks
+
 Before deploying the integration to Home Assistant, run the preflight gate to catch import errors, circular dependencies, and other issues:
 
 ```bash
