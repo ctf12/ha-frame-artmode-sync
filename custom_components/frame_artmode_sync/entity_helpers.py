@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, time, timedelta
+from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -11,7 +12,9 @@ from homeassistant.helpers.entity import DeviceInfo, Entity
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .manager import FrameArtModeSyncManager
+
+if TYPE_CHECKING:
+    from .manager import FrameArtModeSyncManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -138,7 +141,7 @@ class FrameArtModeSyncEntity(Entity):
         self,
         hass: HomeAssistant,
         entry: ConfigEntry,
-        manager: FrameArtModeSyncManager,
+        manager: "FrameArtModeSyncManager",
         entity_id_suffix: str,
     ) -> None:
         """Initialize base entity."""

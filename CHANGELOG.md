@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Fixed socket resource leak in TV reachability check that could cause file descriptor exhaustion
+- Fixed AttributeError when `samsungtvws` library doesn't have `artmode()` method by adding proper method existence checks
+- Fixed `async_track_time_interval` calls to use `timedelta` objects instead of raw integers (HA contract compliance)
+
 ## [0.1.0] - 2024-12-20
 
 ### Added
