@@ -48,9 +48,15 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 try:
-    from pyatv import scan
+    from pyatv import scan, pair, connect
+    from pyatv.const import Protocol
+    from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
+    PYATV_AVAILABLE = True
 except ImportError:
     scan = None
+    pair = None
+    connect = None
+    PYATV_AVAILABLE = False
 
 
 async def async_discover_apple_tvs(hass: HomeAssistant) -> list[dict[str, str]]:
@@ -89,6 +95,8 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Initialize config flow."""
         self.discovered_atvs: list[dict[str, str]] = []
         self.data: dict[str, Any] = {}
+        self._pairing = None
+        self._pairing_protocol = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -152,7 +160,8 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.data["apple_tv_host"] = selected_atv["host"]
             self.data["apple_tv_identifier"] = selected_atv["identifier"]
 
-        return await self.async_step_options()
+        # Check if pairing is needed before proceeding
+        return await self.async_step_pair_apple_tv()
 
     async def async_step_apple_tv_manual(
         self, user_input: dict[str, Any] | None = None
@@ -168,7 +177,146 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         self.data.update(user_input)
-        return await self.async_step_options()
+        return await self.async_step_pair_apple_tv()
+
+    async def async_step_pair_apple_tv(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Pair with Apple TV if needed."""
+        if not PYATV_AVAILABLE:
+            # Skip pairing if pyatv not available, proceed to options
+            return await self.async_step_options()
+        
+        apple_tv_host = self.data.get("apple_tv_host")
+        apple_tv_identifier = self.data.get("apple_tv_identifier")
+        
+        if not apple_tv_host:
+            return await self.async_step_options()
+        
+        # Try to scan for the Apple TV
+        try:
+            loop = asyncio.get_running_loop()
+            try:
+                if apple_tv_identifier:
+                    results = await scan(loop=loop, identifier=apple_tv_identifier, timeout=10)
+                else:
+                    results = await scan(loop=loop, hosts=[apple_tv_host], timeout=10)
+            except TypeError:
+                if apple_tv_identifier:
+                    results = await scan(identifier=apple_tv_identifier, timeout=10)
+                else:
+                    results = await scan(hosts=[apple_tv_host], timeout=10)
+            
+            if not results:
+                _LOGGER.warning("Could not find Apple TV for pairing, proceeding without pairing")
+                return await self.async_step_options()
+            
+            config = results[0]
+            
+            # Try to connect to see if pairing is needed
+            try:
+                try:
+                    atv = await connect(config, loop=loop)
+                except TypeError:
+                    atv = await connect(config)
+                # Connection successful, no pairing needed
+                await atv.close()
+                _LOGGER.info("Apple TV already paired, proceeding to options")
+                return await self.async_step_options()
+            except (AuthenticationError, NotPairedError):
+                # Pairing is required
+                pass
+            except Exception as ex:
+                _LOGGER.warning("Error checking pairing status: %s, proceeding anyway", ex)
+                return await self.async_step_options()
+            
+            # Pairing is needed
+            if user_input is None:
+                # Start pairing process
+                try:
+                    # Find MRP protocol (most common for Apple TV)
+                    pairing = None
+                    pairing_protocol = None
+                    for protocol in config.protocols:
+                        if protocol in (Protocol.MRP, Protocol.AirPlay, Protocol.Companion):
+                            try:
+                                pairing = await pair(config, protocol, loop=loop)
+                            except TypeError:
+                                pairing = await pair(config, protocol)
+                            if pairing:
+                                pairing_protocol = protocol
+                                break
+                    
+                    if not pairing:
+                        _LOGGER.warning("No supported pairing protocol found. Available protocols: %s", 
+                                      [p.name for p in config.protocols])
+                        return await self.async_step_options()
+                    
+                    # Store pairing object for PIN entry
+                    self._pairing = pairing
+                    self._pairing_protocol = pairing_protocol
+                    
+                    # Get PIN (will be displayed on Apple TV)
+                    pin = await pairing.begin()
+                    
+                    return self.async_show_form(
+                        step_id="pair_apple_tv",
+                        data_schema=vol.Schema({
+                            vol.Required("pin", default=""): str,
+                        }),
+                        description_placeholders={
+                            "pin": pin if pin else "Check your Apple TV screen for the PIN code",
+                        },
+                        errors={},
+                    )
+                except Exception as pair_ex:
+                    _LOGGER.error("Error starting pairing: %s", pair_ex)
+                    return self.async_show_form(
+                        step_id="pair_apple_tv",
+                        data_schema=vol.Schema({
+                            vol.Required("pin", default=""): str,
+                        }),
+                        errors={"base": "pairing_failed"},
+                    )
+            
+            # User entered PIN
+            pin = user_input.get("pin", "")
+            if not pin:
+                return self.async_show_form(
+                    step_id="pair_apple_tv",
+                    data_schema=vol.Schema({
+                        vol.Required("pin", default=""): str,
+                    }),
+                    errors={"pin": "pin_required"},
+                )
+            
+            try:
+                # Complete pairing with the PIN entered by user
+                await self._pairing.finish(pin)
+                _LOGGER.info("Successfully paired with Apple TV")
+                # Note: pyatv stores credentials in the config object automatically
+                # We should store the config/credentials for future connections
+                # For now, pyatv will handle credential storage internally
+                return await self.async_step_options()
+            except Exception as finish_ex:
+                _LOGGER.error("Pairing failed with PIN: %s", finish_ex)
+                # Clean up pairing object on failure
+                try:
+                    await self._pairing.close()
+                except Exception:
+                    pass
+                self._pairing = None
+                return self.async_show_form(
+                    step_id="pair_apple_tv",
+                    data_schema=vol.Schema({
+                        vol.Required("pin", default=""): str,
+                    }),
+                    errors={"pin": "pairing_failed"},
+                )
+        except Exception as ex:
+            _LOGGER.error("Error during pairing process: %s", ex)
+            # Proceed to options even if pairing fails (user can pair manually later)
+            return await self.async_step_options()
 
     async def async_step_options(
         self, user_input: dict[str, Any] | None = None

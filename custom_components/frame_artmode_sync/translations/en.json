@@ -33,6 +33,16 @@
           "apple_tv_identifier": "Apple TV Identifier (optional)"
         }
       },
+      "pair_apple_tv": {
+        "title": "Pair Apple TV",
+        "description": "A PIN code will be displayed on your Apple TV screen. Enter it below to complete pairing.",
+        "data": {
+          "pin": "PIN Code"
+        },
+        "data_description": {
+          "pin": "Enter the PIN code shown on your Apple TV screen"
+        }
+      },
       "options": {
         "title": "Options",
         "data": {
