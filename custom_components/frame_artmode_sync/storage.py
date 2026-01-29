@@ -15,16 +15,25 @@ async def async_load_token(
     import logging
     _LOGGER = logging.getLogger(__name__)
     
-    from homeassistant.helpers import storage
-    storage_key = f"{entry.domain}_{entry.entry_id}"
-    store = storage.Store(hass, entry.version, storage_key)
-    stored = await store.async_load()
-    if stored and "frame_token" in stored:
-        token = stored["frame_token"]
-        _LOGGER.debug("Loaded Frame TV token from storage for entry %s", entry.entry_id)
-        return token
-    _LOGGER.debug("No Frame TV token found in storage for entry %s", entry.entry_id)
-    return None
+    try:
+        from homeassistant.helpers import storage
+        storage_key = f"{entry.domain}_{entry.entry_id}"
+        store = storage.Store(hass, entry.version, storage_key)
+        stored = await store.async_load()
+        if stored and "frame_token" in stored:
+            token = stored["frame_token"]
+            # Validate token
+            if token and isinstance(token, str) and token.strip():
+                _LOGGER.debug("Loaded Frame TV token from storage for entry %s (token length: %d)", entry.entry_id, len(token))
+                return token
+            else:
+                _LOGGER.warning("Invalid token found in storage for entry %s (empty or invalid type), ignoring", entry.entry_id)
+                return None
+        _LOGGER.debug("No Frame TV token found in storage for entry %s", entry.entry_id)
+        return None
+    except Exception as ex:
+        _LOGGER.warning("Failed to load Frame TV token from storage for entry %s: %s", entry.entry_id, ex)
+        return None
 
 
 async def async_save_token(
@@ -34,16 +43,25 @@ async def async_save_token(
     import logging
     _LOGGER = logging.getLogger(__name__)
     
-    from homeassistant.helpers import storage
-    storage_key = f"{entry.domain}_{entry.entry_id}"
-    store = storage.Store(hass, entry.version, storage_key)
-    data: dict[str, Any] = {}
-    stored = await store.async_load()
-    if stored:
-        data = stored
-    data["frame_token"] = token
-    await store.async_save(data)
-    _LOGGER.debug("Saved Frame TV token to storage for entry %s", entry.entry_id)
+    # Validate token
+    if not token or not isinstance(token, str) or not token.strip():
+        _LOGGER.warning("Invalid token provided for saving (empty or None)")
+        return
+    
+    try:
+        from homeassistant.helpers import storage
+        storage_key = f"{entry.domain}_{entry.entry_id}"
+        store = storage.Store(hass, entry.version, storage_key)
+        data: dict[str, Any] = {}
+        stored = await store.async_load()
+        if stored:
+            data = stored
+        data["frame_token"] = token
+        await store.async_save(data)
+        _LOGGER.info("Saved Frame TV token to storage for entry %s (token length: %d)", entry.entry_id, len(token))
+    except Exception as ex:
+        _LOGGER.error("Failed to save Frame TV token to storage for entry %s: %s", entry.entry_id, ex)
+        raise  # Re-raise so caller knows save failed
 
 
 async def async_save_atv_credentials(

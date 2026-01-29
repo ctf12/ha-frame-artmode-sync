@@ -25,6 +25,7 @@ from .const import (
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_DRIFT_CORRECTION_COOLDOWN_MINUTES,
     DEFAULT_ENABLED,
+    DEFAULT_MOTION_DETECTION_GRACE_MINUTES,
     DEFAULT_MAX_COMMANDS_PER_5MIN,
     DEFAULT_MAX_DRIFT_CORRECTIONS_PER_HOUR,
     DEFAULT_OVERRIDE_MINUTES,
@@ -373,6 +374,7 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "resync_interval_minutes": DEFAULT_RESYNC_INTERVAL_MINUTES,
             "max_drift_corrections_per_hour": DEFAULT_MAX_DRIFT_CORRECTIONS_PER_HOUR,
             "drift_correction_cooldown_minutes": DEFAULT_DRIFT_CORRECTION_COOLDOWN_MINUTES,
+            "motion_detection_grace_minutes": DEFAULT_MOTION_DETECTION_GRACE_MINUTES,
             "max_commands_per_5min": DEFAULT_MAX_COMMANDS_PER_5MIN,
             "breaker_cooldown_minutes": DEFAULT_BREAKER_COOLDOWN_MINUTES,
             "startup_grace_seconds": DEFAULT_STARTUP_GRACE_SECONDS,
@@ -628,6 +630,10 @@ class FrameArtModeSyncOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Optional(
                 "drift_correction_cooldown_minutes",
                 default=options.get("drift_correction_cooldown_minutes", DEFAULT_DRIFT_CORRECTION_COOLDOWN_MINUTES),
+            ): vol.All(int, vol.Range(min=0, max=60)),
+            vol.Optional(
+                "motion_detection_grace_minutes",
+                default=options.get("motion_detection_grace_minutes", DEFAULT_MOTION_DETECTION_GRACE_MINUTES),
             ): vol.All(int, vol.Range(min=0, max=60)),
             vol.Optional(
                 "max_commands_per_5min",

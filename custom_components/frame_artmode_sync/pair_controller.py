@@ -41,6 +41,7 @@ from .const import (
     DEFAULT_DRIFT_CORRECTION_COOLDOWN_MINUTES,
     DEFAULT_MAX_COMMANDS_PER_5MIN,
     DEFAULT_MAX_DRIFT_CORRECTIONS_PER_HOUR,
+    DEFAULT_MOTION_DETECTION_GRACE_MINUTES,
     DEFAULT_OVERRIDE_MINUTES,
     DEFAULT_RESYNC_INTERVAL_MINUTES,
     DEFAULT_RETURN_DELAY_SECONDS,
@@ -108,6 +109,7 @@ class PairController:
         self.pair_name = pair_name
         self.tag = tag
         self.config = config
+        self._entry = None  # Will be set in async_setup
 
         # Clients
         base_pairing_name = config.get("base_pairing_name", "FrameArtSync")
@@ -193,6 +195,10 @@ class PairController:
         self._last_drift_correction: datetime | None = None
         self._last_drift_at: datetime | None = None
         self._consecutive_drifts = 0
+        
+        # Motion detection grace period - track when we last set Art Mode ON
+        # If TV turns it off within grace period, assume it's motion detection and don't correct
+        self._last_art_mode_on_set: datetime | None = None
 
         # Tasks
         self._return_to_art_task: asyncio.Task | None = None
@@ -225,6 +231,7 @@ class PairController:
             if e.entry_id == self.entry_id
         ]
         entry = entries[0] if entries else None
+        self._entry = entry  # Store for later use in re-pair methods
         
         # Backwards compatibility: if TV state source not configured, auto-discover
         if not self.tv_state_source_entity_id:
@@ -851,7 +858,21 @@ class PairController:
 
         # Idempotency check
         if desired == MODE_ART and actual_artmode is True:
-            # Already correct
+            # Already correct - also clear motion detection grace period since we're confirming it's ON
+            # (TV might have turned it back on after motion was detected)
+            if self._last_art_mode_on_set:
+                # If it's been a while since we set it, clear the grace period (TV is managing it now)
+                last_set = normalize_datetime(self._last_art_mode_on_set)
+                if last_set:
+                    try:
+                        delta = dt_util.utcnow() - last_set
+                        motion_grace_minutes = self.config.get("motion_detection_grace_minutes", DEFAULT_MOTION_DETECTION_GRACE_MINUTES)
+                        if isinstance(delta, timedelta) and delta.total_seconds() >= motion_grace_minutes * 60:
+                            # Grace period expired, clear it - TV is managing Art Mode normally now
+                            self._last_art_mode_on_set = None
+                            _LOGGER.debug("Motion detection grace period expired, TV is managing Art Mode normally")
+                    except (AttributeError, TypeError):
+                        pass
             _LOGGER.info("No action needed: desired=ART, actual=ON (already in Art Mode)")
             self._phase = PHASE_IDLE
             self._last_action = ACTION_NONE
@@ -891,7 +912,9 @@ class PairController:
                 self._command_fail_count += 1
                 _LOGGER.warning("Failed to set Art Mode ON: %s", action)
             else:
-                _LOGGER.info("Art Mode ON command succeeded, verifying state...")
+                # Track when we successfully set Art Mode ON for motion detection grace period
+                self._last_art_mode_on_set = dt_util.utcnow()
+                _LOGGER.info("Art Mode ON command succeeded, verifying state... (motion detection grace period started)")
 
         elif desired == MODE_OFF:
             self._phase = PHASE_IDLE
@@ -1356,6 +1379,26 @@ class PairController:
         # Check drift
         drift = False
         if desired == MODE_ART and actual is not True:
+            # Special case: If Art Mode is OFF but we recently set it ON, 
+            # the TV likely turned it off due to motion detection - respect that
+            motion_grace_minutes = self.config.get("motion_detection_grace_minutes", DEFAULT_MOTION_DETECTION_GRACE_MINUTES)
+            if actual is False and self._last_art_mode_on_set:
+                last_set = normalize_datetime(self._last_art_mode_on_set)
+                if last_set:
+                    try:
+                        delta = now - last_set
+                        if isinstance(delta, timedelta) and delta.total_seconds() < motion_grace_minutes * 60:
+                            _LOGGER.info(
+                                "[resync] Art Mode OFF detected but within motion detection grace period "
+                                "(%d minutes). TV likely turned it off due to no motion - respecting TV behavior. "
+                                "Will not correct drift.",
+                                motion_grace_minutes
+                            )
+                            # Don't set drift = True, let TV's motion detection work
+                            return
+                    except (AttributeError, TypeError) as e:
+                        _LOGGER.warning("Error checking motion detection grace period: %s", e)
+            
             drift = True
             _LOGGER.warning("[resync] DRIFT DETECTED: desired=ART, actual=%s", 
                           "ON" if actual is True else ("OFF" if actual is False else "UNKNOWN"))
@@ -1538,6 +1581,135 @@ class PairController:
             self._pair_health = HEALTH_OK
             self._log_event(EVENT_TYPE_BREAKER_CLOSED, ACTION_RESULT_SUCCESS, "Breaker cleared manually")
             await self._fire_event()
+
+    async def async_repair_apple_tv(self) -> None:
+        """Re-pair Apple TV (service)."""
+        _LOGGER.info("Starting Apple TV re-pairing for %s", self.pair_name)
+        async with self._lock:
+            try:
+                # Disconnect current connection
+                await self.atv_client.async_disconnect()
+                
+                # Clear saved credentials
+                entry = self._entry
+                if entry:
+                    from .storage import async_load_atv_credentials, async_save_atv_credentials
+                    from homeassistant.helpers import storage
+                    
+                    # Clear credentials from storage
+                    storage_key = f"{entry.domain}_{entry.entry_id}"
+                    store = storage.Store(self.hass, entry.version, storage_key)
+                    stored = await store.async_load()
+                    if stored:
+                        stored.pop("atv_credentials", None)
+                        await store.async_save(stored)
+                        _LOGGER.info("Cleared saved Apple TV credentials")
+                
+                # Re-pair using pyatv
+                from pyatv import scan, pair, connect
+                from pyatv.const import Protocol
+                from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
+                
+                loop = asyncio.get_running_loop()
+                results = None
+                
+                # Scan for Apple TV
+                try:
+                    if self.atv_client.identifier:
+                        try:
+                            results = await scan(loop=loop, identifier=self.atv_client.identifier, timeout=10)
+                        except TypeError:
+                            results = await scan(identifier=self.atv_client.identifier, timeout=10)
+                    else:
+                        try:
+                            results = await scan(loop=loop, hosts=[self.atv_client.host], timeout=10)
+                        except TypeError:
+                            results = await scan(hosts=[self.atv_client.host], timeout=10)
+                except Exception as scan_ex:
+                    _LOGGER.error("Failed to scan for Apple TV: %s", scan_ex)
+                    raise
+                
+                if not results:
+                    _LOGGER.error("Apple TV not found for re-pairing")
+                    raise Exception("Apple TV not found")
+                
+                config = results[0]
+                
+                # Start pairing
+                pairing = None
+                pairing_protocol = None
+                for protocol in config.protocols:
+                    if protocol in (Protocol.MRP, Protocol.AirPlay, Protocol.Companion):
+                        try:
+                            try:
+                                pairing = await pair(config, protocol, loop=loop)
+                            except TypeError:
+                                pairing = await pair(config, protocol)
+                            if pairing:
+                                pairing_protocol = protocol
+                                break
+                        except Exception:
+                            continue
+                
+                if not pairing:
+                    _LOGGER.error("No supported pairing protocol found")
+                    raise Exception("No supported pairing protocol")
+                
+                # Get PIN
+                pin = await pairing.begin()
+                _LOGGER.info("Apple TV pairing PIN: %s (check Apple TV screen)", pin)
+                
+                # Wait for user to enter PIN (in a real implementation, this would be handled via a config flow step)
+                # For now, we'll raise an exception indicating the user needs to use the config flow
+                await pairing.close()
+                raise Exception(
+                    f"Apple TV re-pairing requires entering PIN {pin} on the Apple TV screen. "
+                    "Please use the integration options to re-pair, or call the service with a PIN parameter."
+                )
+                
+            except Exception as ex:
+                _LOGGER.error("Apple TV re-pairing failed: %s", ex)
+                raise
+
+    async def async_repair_samsung_tv(self) -> None:
+        """Re-pair Samsung TV (service)."""
+        _LOGGER.info("Starting Samsung TV re-pairing for %s", self.pair_name)
+        async with self._lock:
+            try:
+                # Disconnect current connection
+                await self.frame_client.async_disconnect()
+                
+                # Clear saved token
+                entry = self._entry
+                if entry:
+                    from homeassistant.helpers import storage
+                    storage_key = f"{entry.domain}_{entry.entry_id}"
+                    store = storage.Store(self.hass, entry.version, storage_key)
+                    stored = await store.async_load()
+                    if stored:
+                        stored.pop("frame_token", None)
+                        await store.async_save(stored)
+                        _LOGGER.info("Cleared saved Samsung TV token")
+                
+                # Clear token from client
+                self.frame_client.token = None
+                
+                # Re-pair by connecting (will trigger pairing prompt on TV)
+                async def token_save_callback(token: str) -> None:
+                    if entry:
+                        await async_save_token(self.hass, entry, token)
+                
+                success = await self.frame_client.async_connect(token_callback=token_save_callback)
+                if success:
+                    _LOGGER.info("Samsung TV re-pairing successful")
+                    self._log_event(EVENT_TYPE_MANUAL, ACTION_RESULT_SUCCESS, "Samsung TV re-paired successfully")
+                else:
+                    _LOGGER.error("Samsung TV re-pairing failed - check TV for pairing prompt")
+                    raise Exception("Samsung TV re-pairing failed - check TV for pairing prompt")
+                    
+            except Exception as ex:
+                _LOGGER.error("Samsung TV re-pairing failed: %s", ex)
+                raise
 
     # Property getters for entities
     @property

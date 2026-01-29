@@ -20,6 +20,8 @@ from .const import (
     SERVICE_FORCE_ART_ON,
     SERVICE_FORCE_TV_OFF,
     SERVICE_FORCE_TV_ON,
+    SERVICE_REPAIR_APPLE_TV,
+    SERVICE_REPAIR_SAMSUNG_TV,
     SERVICE_RESYNC,
 )
 
@@ -80,6 +82,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     await asyncio.wait_for(controller.async_clear_override(), timeout=SERVICE_TIMEOUT)
                 elif service == SERVICE_CLEAR_BREAKER:
                     await asyncio.wait_for(controller.async_clear_breaker(), timeout=SERVICE_TIMEOUT)
+                elif service == SERVICE_REPAIR_APPLE_TV:
+                    await asyncio.wait_for(controller.async_repair_apple_tv(), timeout=60.0)  # Longer timeout for pairing
+                elif service == SERVICE_REPAIR_SAMSUNG_TV:
+                    await asyncio.wait_for(controller.async_repair_samsung_tv(), timeout=60.0)  # Longer timeout for pairing
             except asyncio.TimeoutError:
                 _LOGGER.error("Service %s on %s timed out after %d seconds", service, entry_id, SERVICE_TIMEOUT)
             except Exception as ex:
@@ -156,6 +162,26 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         }),
     )
 
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REPAIR_APPLE_TV,
+        async_handle_service,
+        schema=vol.Schema({
+            vol.Optional("device_id"): str,
+            vol.Optional("entry_id"): str,
+        }),
+    )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REPAIR_SAMSUNG_TV,
+        async_handle_service,
+        schema=vol.Schema({
+            vol.Optional("device_id"): str,
+            vol.Optional("entry_id"): str,
+        }),
+    )
+
 
 async def async_unload_services(hass: HomeAssistant) -> None:
     """Unload services."""
@@ -166,4 +192,6 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     hass.services.async_remove(DOMAIN, SERVICE_RESYNC)
     hass.services.async_remove(DOMAIN, SERVICE_CLEAR_OVERRIDE)
     hass.services.async_remove(DOMAIN, SERVICE_CLEAR_BREAKER)
+    hass.services.async_remove(DOMAIN, SERVICE_REPAIR_APPLE_TV)
+    hass.services.async_remove(DOMAIN, SERVICE_REPAIR_SAMSUNG_TV)
 

@@ -123,3 +123,39 @@ resync:
       required: false
       selector:
         text:
+
+repair_apple_tv:
+  name: Re-pair Apple TV
+  description: Clear saved Apple TV credentials and initiate re-pairing. Check logs for PIN code.
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        device:
+          integration: frame_artmode_sync
+    entry_id:
+      name: Entry ID
+      description: Target config entry ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        text:
+
+repair_samsung_tv:
+  name: Re-pair Samsung TV
+  description: Clear saved Samsung TV token and initiate re-pairing. Check TV screen for pairing prompt.
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        device:
+          integration: frame_artmode_sync
+    entry_id:
+      name: Entry ID
+      description: Target config entry ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        text:
