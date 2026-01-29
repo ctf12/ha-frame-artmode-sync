@@ -2,9 +2,9 @@
   "domain": "frame_artmode_sync",
   "name": "Frame Art Mode Sync",
   "version": "0.1.0",
-  "documentation": "https://github.com/chrisfill/ha-frame-artmode-sync",
-  "issue_tracker": "https://github.com/chrisfill/ha-frame-artmode-sync/issues",
-  "codeowners": ["@chrisfill"],
+  "documentation": "https://github.com/ctf12/ha-frame-artmode-sync",
+  "issue_tracker": "https://github.com/ctf12/ha-frame-artmode-sync/issues",
+  "codeowners": ["@ctf12"],
   "requirements": [
     "pyatv>=0.14.0",
     "samsungtvws>=2.6.0",

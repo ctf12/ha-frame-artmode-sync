@@ -34,7 +34,7 @@ A robust Home Assistant integration that keeps Samsung The Frame TVs in Art Mode
 1. Open HACS in Home Assistant
 2. Go to **Integrations**
 3. Click the three dots menu (⋮) and select **Custom repositories**
-4. Add this repository URL: `https://github.com/chrisfill/ha-frame-artmode-sync`
+4. Add this repository URL: `https://github.com/ctf12/ha-frame-artmode-sync`
 5. Select category: **Integration**
 6. Click **Add**
 7. Click **Download** on the Frame Art Mode Sync card
@@ -282,8 +282,45 @@ For licensing information about dependencies, see [NOTICE](NOTICE).
 ## Support
 
 For issues, feature requests, or questions:
-- Open an issue on [GitHub](https://github.com/chrisfill/ha-frame-artmode-sync/issues)
+- Open an issue on [GitHub](https://github.com/ctf12/ha-frame-artmode-sync/issues)
 - Check existing issues and discussions
+
+## Preflight + Deploy
+
+Before deploying the integration to Home Assistant, run the preflight gate to catch import errors, circular dependencies, and other issues:
+
+```bash
+python3 tools/preflight.py
+```
+
+The preflight script performs comprehensive checks:
+- **A) Import Order**: Tests all modules import in HA-like order
+- **B) Dynamic Imports**: Imports all `.py` files to catch hidden issues
+- **C) Circular Imports**: Detects circular dependency chains
+- **D) Const Contract**: Verifies all imported constants exist in `const.py`
+- **E) Config Flow Safety**: Ensures config flow doesn't import heavy deps at module level
+- **F) Entrypoint Sanity**: Verifies `async_setup_entry` and `async_unload_entry` exist
+
+If preflight passes, the integration is ready for deployment.
+
+### Optional: Import Graph
+
+To visualize import relationships and debug circular dependencies:
+
+```bash
+python3 tools/print_import_graph.py
+```
+
+### Deploy Command
+
+After preflight passes, copy the integration to Home Assistant:
+
+```bash
+# From repo root
+cp -r custom_components/frame_artmode_sync /path/to/homeassistant/config/custom_components/
+```
+
+Or use your preferred deployment method (git, HACS, etc.).
 
 ## Import Reliability Checklist
 
@@ -309,7 +346,7 @@ Before copying the integration to Home Assistant:
    - Search for "Frame Art Mode Sync"
    - The config flow should load without errors
 
-If you see "cannot import name X" errors, check the [IMPORT_RELIABILITY_REPORT.md](IMPORT_RELIABILITY_REPORT.md) for troubleshooting.
+If you encounter import errors, ensure all dependencies are installed and run the preflight script to verify integration integrity.
 
 ## Contributing
 
