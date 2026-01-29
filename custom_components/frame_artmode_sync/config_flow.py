@@ -238,7 +238,8 @@ class FrameArtModeSyncOptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
+        super().__init__()
+        self._config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -279,18 +280,18 @@ class FrameArtModeSyncOptionsFlowHandler(config_entries.OptionsFlow):
                     )
             
             # Update options
-            current_options = dict(self.config_entry.options)
+            current_options = dict(self._config_entry.options)
             current_options.update(user_input)
             return self.async_create_entry(title="", data=current_options)
 
-        options = {**self.config_entry.data, **self.config_entry.options}
+        options = {**self._config_entry.data, **self._config_entry.options}
         schema = self._get_schema(options)
         return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))
 
     def _get_schema(self, options: dict[str, Any] | None = None) -> dict:
         """Get the options schema."""
         if options is None:
-            options = {**self.config_entry.data, **self.config_entry.options}
+            options = {**self._config_entry.data, **self._config_entry.options}
         
         schema = {
             vol.Optional("enabled", default=options.get("enabled", DEFAULT_ENABLED)): bool,

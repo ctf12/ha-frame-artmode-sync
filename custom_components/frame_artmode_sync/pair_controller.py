@@ -220,7 +220,8 @@ class PairController:
             # Try to discover a Samsung media_player entity matching the frame host or pair name
             # Look for entities with host in name/attributes or matching pair_name
             frame_host_short = self.frame_client.host.split('.')[-1] if '.' in self.frame_client.host else self.frame_client.host
-            for entity_id, state in self.hass.states.async_all("media_player"):
+            for state in self.hass.states.async_all("media_player"):
+                entity_id = state.entity_id
                 entity_name = state.attributes.get("friendly_name", "").lower()
                 if (
                     "samsung" in entity_name.lower()
