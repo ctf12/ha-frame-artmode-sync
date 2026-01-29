@@ -246,38 +246,58 @@ class FrameArtModeSyncOptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Manage the options."""
         if user_input is not None:
+            # Normalize empty strings to None for entity fields
+            if user_input.get("tv_state_source_entity_id") == "":
+                user_input["tv_state_source_entity_id"] = None
+            if user_input.get("wake_remote_entity_id") == "":
+                user_input["wake_remote_entity_id"] = None
+            if user_input.get("presence_entity_id") == "":
+                user_input["presence_entity_id"] = None
+            
             # Validate entity IDs if provided
             if user_input.get("tv_state_source_entity_id"):
                 entity_id = user_input["tv_state_source_entity_id"]
-                state = self.hass.states.get(entity_id)
-                if not state:
-                    return self.async_show_form(
-                        step_id="init",
-                        data_schema=vol.Schema(self._get_schema()),
-                        errors={"tv_state_source_entity_id": "entity_not_found"},
-                    )
-                if not entity_id.startswith("media_player."):
-                    return self.async_show_form(
-                        step_id="init",
-                        data_schema=vol.Schema(self._get_schema()),
-                        errors={"tv_state_source_entity_id": "must_be_media_player"},
-                    )
+                # EntitySelector can return a list, extract first item if needed
+                if isinstance(entity_id, list):
+                    entity_id = entity_id[0] if entity_id else None
+                    user_input["tv_state_source_entity_id"] = entity_id
+                
+                if entity_id:
+                    state = self.hass.states.get(entity_id)
+                    if not state:
+                        return self.async_show_form(
+                            step_id="init",
+                            data_schema=vol.Schema(self._get_schema()),
+                            errors={"tv_state_source_entity_id": "entity_not_found"},
+                        )
+                    if not entity_id.startswith("media_player."):
+                        return self.async_show_form(
+                            step_id="init",
+                            data_schema=vol.Schema(self._get_schema()),
+                            errors={"tv_state_source_entity_id": "must_be_media_player"},
+                        )
             
             if user_input.get("wake_remote_entity_id"):
                 entity_id = user_input["wake_remote_entity_id"]
-                state = self.hass.states.get(entity_id)
-                if not state:
-                    return self.async_show_form(
-                        step_id="init",
-                        data_schema=vol.Schema(self._get_schema()),
-                        errors={"wake_remote_entity_id": "entity_not_found"},
-                    )
-                if not entity_id.startswith("remote."):
-                    return self.async_show_form(
-                        step_id="init",
-                        data_schema=vol.Schema(self._get_schema()),
-                        errors={"wake_remote_entity_id": "must_be_remote"},
-                    )
+                # EntitySelector can return a list, extract first item if needed
+                if isinstance(entity_id, list):
+                    entity_id = entity_id[0] if entity_id else None
+                    user_input["wake_remote_entity_id"] = entity_id
+                
+                if entity_id:
+                    state = self.hass.states.get(entity_id)
+                    if not state:
+                        return self.async_show_form(
+                            step_id="init",
+                            data_schema=vol.Schema(self._get_schema()),
+                            errors={"wake_remote_entity_id": "entity_not_found"},
+                        )
+                    if not entity_id.startswith("remote."):
+                        return self.async_show_form(
+                            step_id="init",
+                            data_schema=vol.Schema(self._get_schema()),
+                            errors={"wake_remote_entity_id": "must_be_remote"},
+                        )
             
             # Update options
             current_options = dict(self._config_entry.options)
@@ -304,13 +324,13 @@ class FrameArtModeSyncOptionsFlowHandler(config_entries.OptionsFlow):
                 "tv_state_source_entity_id",
                 default=options.get("tv_state_source_entity_id"),
             ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="media_player")
+                selector.EntitySelectorConfig(domain="media_player", multiple=False)
             ),
             vol.Optional(
                 "wake_remote_entity_id",
                 default=options.get("wake_remote_entity_id"),
             ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="remote")
+                selector.EntitySelectorConfig(domain="remote", multiple=False)
             ),
             vol.Optional(
                 "enable_remote_wake",
@@ -368,7 +388,9 @@ class FrameArtModeSyncOptionsFlowHandler(config_entries.OptionsFlow):
         # Conditional presence fields
         if options.get("presence_mode") == "entity":
             schema.update({
-                vol.Optional("presence_entity_id", default=options.get("presence_entity_id")): selector.EntitySelector(),
+                vol.Optional("presence_entity_id", default=options.get("presence_entity_id")): selector.EntitySelector(
+                    selector.EntitySelectorConfig(multiple=False)
+                ),
                 vol.Optional("home_states", default=options.get("home_states", "home,on,true,True")): str,
                 vol.Optional("away_states", default=options.get("away_states", "not_home,away,off,false,False")): str,
                 vol.Optional(

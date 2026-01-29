@@ -47,7 +47,14 @@
     "step": {
       "init": {
         "title": "Configure Frame Art Mode Sync",
-        "description": "Configure options for this Frame/Apple TV pair"
+        "description": "Configure options for this Frame/Apple TV pair",
+        "data": {
+          "tv_state_source_entity_id": "TV State Source Entity",
+          "wake_remote_entity_id": "Wake Remote Entity",
+          "presence_entity_id": "Presence Entity",
+          "enable_remote_wake": "Enable Remote Wake",
+          "enable_wol_fallback": "Enable WOL Fallback"
+        }
       }
     }
   },
