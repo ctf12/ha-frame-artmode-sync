@@ -293,10 +293,33 @@ class FrameArtModeSyncOptionsFlowHandler(config_entries.OptionsFlow):
         if options is None:
             options = {**self._config_entry.data, **self._config_entry.options}
         
+        # Start with the most important/commonly used fields first
         schema = {
+            # Basic settings
             vol.Optional("enabled", default=options.get("enabled", DEFAULT_ENABLED)): bool,
             vol.Optional("active_start", default=options.get("active_start", DEFAULT_ACTIVE_START)): str,
             vol.Optional("active_end", default=options.get("active_end", DEFAULT_ACTIVE_END)): str,
+            # TV state and wake configuration (important fields first)
+            vol.Optional(
+                "tv_state_source_entity_id",
+                default=options.get("tv_state_source_entity_id"),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="media_player")
+            ),
+            vol.Optional(
+                "wake_remote_entity_id",
+                default=options.get("wake_remote_entity_id"),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="remote")
+            ),
+            vol.Optional(
+                "enable_remote_wake",
+                default=options.get("enable_remote_wake", bool(options.get("wake_remote_entity_id"))),
+            ): bool,
+            vol.Optional(
+                "enable_wol_fallback",
+                default=options.get("enable_wol_fallback", False),
+            ): bool,
             vol.Optional(
                 "return_delay_seconds",
                 default=options.get("return_delay_seconds", DEFAULT_RETURN_DELAY_SECONDS),
@@ -368,27 +391,8 @@ class FrameArtModeSyncOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
             })
 
+        # Add remaining advanced settings
         schema.update({
-            vol.Optional(
-                "tv_state_source_entity_id",
-                default=options.get("tv_state_source_entity_id"),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="media_player")
-            ),
-            vol.Optional(
-                "wake_remote_entity_id",
-                default=options.get("wake_remote_entity_id"),
-            ): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain="remote")
-            ),
-            vol.Optional(
-                "enable_remote_wake",
-                default=options.get("enable_remote_wake", bool(options.get("wake_remote_entity_id"))),
-            ): bool,
-            vol.Optional(
-                "enable_wol_fallback",
-                default=options.get("enable_wol_fallback", False),
-            ): bool,
             vol.Optional(
                 "remote_wake_retries",
                 default=options.get("remote_wake_retries", DEFAULT_REMOTE_WAKE_RETRIES),
