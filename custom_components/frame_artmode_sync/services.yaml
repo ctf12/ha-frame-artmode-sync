@@ -1,0 +1,125 @@
+clear_breaker:
+  name: Clear Breaker
+  description: Clear circuit breaker for the specified pair(s)
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        device:
+          integration: frame_artmode_sync
+    entry_id:
+      name: Entry ID
+      description: Target config entry ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        text:
+
+clear_override:
+  name: Clear Override
+  description: Clear manual override for the specified pair(s)
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        device:
+          integration: frame_artmode_sync
+    entry_id:
+      name: Entry ID
+      description: Target config entry ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        text:
+
+force_art_off:
+  name: Force Art Mode Off
+  description: Force Art Mode off for the specified pair(s)
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        device:
+          integration: frame_artmode_sync
+    entry_id:
+      name: Entry ID
+      description: Target config entry ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        text:
+
+force_art_on:
+  name: Force Art Mode On
+  description: Force Art Mode on for the specified pair(s)
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        device:
+          integration: frame_artmode_sync
+    entry_id:
+      name: Entry ID
+      description: Target config entry ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        text:
+
+force_tv_off:
+  name: Force TV Off
+  description: Force TV off for the specified pair(s)
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        device:
+          integration: frame_artmode_sync
+    entry_id:
+      name: Entry ID
+      description: Target config entry ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        text:
+
+force_tv_on:
+  name: Force TV On
+  description: Force TV on (exit Art Mode) for the specified pair(s)
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        device:
+          integration: frame_artmode_sync
+    entry_id:
+      name: Entry ID
+      description: Target config entry ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        text:
+
+resync:
+  name: Resync
+  description: Trigger a resync for the specified pair(s)
+  fields:
+    device_id:
+      name: Device ID
+      description: Target device ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        device:
+          integration: frame_artmode_sync
+    entry_id:
+      name: Entry ID
+      description: Target config entry ID (optional, applies to all if not specified)
+      required: false
+      selector:
+        text:
