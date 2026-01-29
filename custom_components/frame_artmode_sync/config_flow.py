@@ -57,6 +57,10 @@ except ImportError:
     scan = None
     pair = None
     connect = None
+    Protocol = None  # type: ignore[assignment, misc]
+    AuthenticationError = Exception  # type: ignore[assignment, misc]
+    NotPairedError = Exception  # type: ignore[assignment, misc]
+    PairingError = Exception  # type: ignore[assignment, misc]
     PYATV_AVAILABLE = False
 
 
@@ -224,12 +228,15 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await atv.close()
                 _LOGGER.info("Apple TV already paired, proceeding to options")
                 return await self.async_step_options()
-            except (AuthenticationError, NotPairedError):
-                # Pairing is required
-                pass
-            except Exception as ex:
-                _LOGGER.warning("Error checking pairing status: %s, proceeding anyway", ex)
-                return await self.async_step_options()
+            except Exception as auth_ex:
+                # Check if it's an authentication/pairing error
+                if PYATV_AVAILABLE and isinstance(auth_ex, (AuthenticationError, NotPairedError)):
+                    # Pairing is required - continue to pairing flow
+                    pass
+                else:
+                    # Some other error, proceed to options
+                    _LOGGER.warning("Error checking pairing status: %s, proceeding anyway", auth_ex)
+                    return await self.async_step_options()
             
             # Pairing is needed
             if user_input is None:
@@ -238,6 +245,9 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     # Find MRP protocol (most common for Apple TV)
                     pairing = None
                     pairing_protocol = None
+                    if Protocol is None:
+                        _LOGGER.warning("pyatv Protocol not available, cannot pair")
+                        return await self.async_step_options()
                     for protocol in config.protocols:
                         if protocol in (Protocol.MRP, Protocol.AirPlay, Protocol.Companion):
                             try:
