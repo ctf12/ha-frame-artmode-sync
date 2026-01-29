@@ -5,16 +5,32 @@ This project (ha-frame-artmode-sync) is licensed under the MIT License.
 This project depends on the following third-party libraries, which are installed via Home Assistant's requirement management system:
 
 1. pyatv (MIT License)
+   - Version: >=0.14.0 (see manifest.json for current requirement)
    - Used for Apple TV connectivity and push updates
    - Repository: https://github.com/postlund/pyatv
+   - Documentation: https://pyatv.dev
    - License: https://github.com/postlund/pyatv/blob/master/LICENSE
+   - Copyright: postlund and contributors
 
 2. samsungtvws / samsung-tv-ws-api (LGPL-3.0 License)
+   - Version: >=2.6.0 (see manifest.json for current requirement)
    - Used for Samsung TV WebSocket control
    - Repository: https://github.com/xchwarze/samsung-tv-ws-api
    - License: https://github.com/xchwarze/samsung-tv-ws-api/blob/master/LICENSE
+   - Copyright: xchwarze and contributors
+
+3. wakeonlan (MIT License)
+   - Version: >=3.0.0 (see manifest.json for current requirement)
+   - Used for Wake-on-LAN functionality
+   - Repository: https://github.com/remcohaszing/pywakeonlan
+   - License: https://github.com/remcohaszing/pywakeonlan/blob/main/LICENSE
+   - Copyright: remcohaszing and contributors
+
+IMPORTANT: This integration does NOT copy or include any source code from these dependencies. They are used as external libraries installed via pip/Home Assistant's dependency management system. The actual library code is not distributed with this integration.
 
 The licenses of these third-party dependencies remain with their respective authors and are not affected by this project's MIT license. Users must comply with all applicable licenses when using this integration.
+
+For LGPL-3.0 compliance (samsungtvws): The library is dynamically linked at runtime. Users can obtain the source code from the repository links above.
 
 This project is not affiliated with, endorsed by, or associated with Samsung or Apple.
 

@@ -24,8 +24,17 @@ This integration uses [samsung-tv-ws-api](https://github.com/xchwarze/samsung-tv
 
 - Repository: https://github.com/xchwarze/samsung-tv-ws-api
 - License: LGPL-3.0
+- Current version requirement: >=2.6.0 (see manifest.json)
 
 The samsungtvws library provides WebSocket-based control for modern Samsung TVs, including Art Mode management. The ecosystem also includes contributions from **NickWaterton** and others who have maintained and improved Samsung TV integrations in Home Assistant.
+
+### wakeonlan
+
+This integration uses [wakeonlan](https://github.com/remcohaszing/pywakeonlan) (Python package: `wakeonlan`) for Wake-on-LAN functionality.
+
+- Repository: https://github.com/remcohaszing/pywakeonlan
+- License: MIT
+- Current version requirement: >=3.0.0 (see manifest.json)
 
 ## Home Assistant
 
