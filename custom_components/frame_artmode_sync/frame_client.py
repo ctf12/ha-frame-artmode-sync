@@ -45,7 +45,10 @@ class FrameClient:
         """Connect to Frame TV."""
         async with self._lock:
             try:
-                _LOGGER.info("Connecting to Frame TV at %s:%d", self.host, self.port)
+                if self.token:
+                    _LOGGER.info("Connecting to Frame TV at %s:%d with saved token", self.host, self.port)
+                else:
+                    _LOGGER.info("Connecting to Frame TV at %s:%d (no token - pairing may be required)", self.host, self.port)
                 self._tv = SamsungTVWS(
                     host=self.host,
                     port=self.port,
@@ -61,7 +64,10 @@ class FrameClient:
                         timeout=CONNECTION_TIMEOUT,
                     )
                 except UnauthorizedError:
-                    _LOGGER.info("Pairing required for Frame TV")
+                    if self.token:
+                        _LOGGER.warning("Frame TV rejected saved token - may need to re-pair. Token: %s", self.token[:10] + "..." if len(self.token) > 10 else self.token)
+                    else:
+                        _LOGGER.info("Pairing required for Frame TV (no token available)")
                     if token_callback:
                         # Get token (blocking operation)
                         token = await asyncio.wait_for(
@@ -70,6 +76,7 @@ class FrameClient:
                         )
                         if token:
                             self.token = token
+                            _LOGGER.info("Obtained new Frame TV token: %s", token[:10] + "..." if len(token) > 10 else token)
                             # Save token via callback (assume it's async)
                             if token_callback:
                                 try:
@@ -78,6 +85,7 @@ class FrameClient:
                                     else:
                                         # Sync callback, run in executor
                                         await asyncio.to_thread(token_callback, token)
+                                    _LOGGER.info("Saved Frame TV token for future connections")
                                 except Exception as ex:
                                     _LOGGER.warning("Error saving token: %s", ex)
                             # Reconnect with token

@@ -113,6 +113,15 @@ class PairController:
         base_pairing_name = config.get("base_pairing_name", "FrameArtSync")
         client_name = f"{base_pairing_name}-{tag}"[:18]
         self.frame_client = FrameClient(frame_host, frame_port, None, client_name)
+        
+        # Get entry for credential loading
+        entries = [
+            e
+            for e in self.hass.config_entries.async_entries("frame_artmode_sync")
+            if e.entry_id == self.entry_id
+        ]
+        entry = entries[0] if entries else None
+        
         self.atv_client = ATVClient(
             apple_tv_host,
             apple_tv_identifier,
@@ -120,6 +129,8 @@ class PairController:
             config.get("atv_debounce_seconds", DEFAULT_ATV_DEBOUNCE_SECONDS),
             config.get("atv_grace_seconds_on_disconnect", DEFAULT_ATV_GRACE_SECONDS_ON_DISCONNECT),
             self._on_atv_state_changed,
+            hass=self.hass,
+            entry=entry,
         )
 
         self.frame_mac = frame_mac
@@ -295,6 +306,9 @@ class PairController:
             token = await async_load_token(self.hass, entry)
             if token:
                 self.frame_client.token = token
+                _LOGGER.info("Loaded saved Frame TV token for %s", self.frame_client.host)
+            else:
+                _LOGGER.info("No saved Frame TV token found for %s - will pair on first connection", self.frame_client.host)
 
         # Connect clients with timeouts
         async def token_save_callback(token: str) -> None:

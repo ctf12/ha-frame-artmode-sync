@@ -37,6 +37,8 @@ class ATVClient:
         debounce_seconds: int = DEFAULT_ATV_DEBOUNCE_SECONDS,
         grace_seconds: int = DEFAULT_ATV_GRACE_SECONDS_ON_DISCONNECT,
         state_callback: Callable[[bool, str], None] | None = None,
+        hass: Any | None = None,
+        entry: Any | None = None,
     ) -> None:
         """Initialize Apple TV client."""
         self.host = host
@@ -45,6 +47,8 @@ class ATVClient:
         self.debounce_seconds = debounce_seconds
         self.grace_seconds = grace_seconds
         self.state_callback = state_callback
+        self.hass = hass
+        self.entry = entry
 
         self.atv: AppleTV | None = None
         self.push_updater: PushUpdater | None = None
@@ -131,6 +135,26 @@ class ATVClient:
                 config = results[0]
                 _LOGGER.info("Found Apple TV: %s at %s (identifier: %s)", 
                            config.name, config.address, config.identifier)
+
+                # CRITICAL: Load saved credentials and apply to config
+                if self.hass and self.entry:
+                    from .storage import async_load_atv_credentials
+                    saved_creds = await async_load_atv_credentials(self.hass, self.entry)
+                    if saved_creds:
+                        _LOGGER.debug("Loading saved Apple TV credentials")
+                        # Apply credentials to config for each protocol
+                        for protocol in config.protocols:
+                            protocol_name = protocol.name if hasattr(protocol, 'name') else str(protocol)
+                            if protocol_name in saved_creds:
+                                try:
+                                    # Parse credential string back to credential object
+                                    # pyatv credentials are typically strings that can be passed to set_credentials
+                                    cred_str = saved_creds[protocol_name]
+                                    if hasattr(config, 'set_credentials'):
+                                        config.set_credentials(protocol, cred_str)
+                                        _LOGGER.debug("Restored credentials for protocol %s", protocol_name)
+                                except Exception as cred_ex:
+                                    _LOGGER.warning("Failed to restore credentials for protocol %s: %s", protocol_name, cred_ex)
 
                 # Try to connect (may require pairing)
                 try:

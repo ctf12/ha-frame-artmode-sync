@@ -294,9 +294,18 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # Complete pairing with the PIN entered by user
                 await self._pairing.finish(pin)
                 _LOGGER.info("Successfully paired with Apple TV")
-                # Note: pyatv stores credentials in the config object automatically
-                # We should store the config/credentials for future connections
-                # For now, pyatv will handle credential storage internally
+                
+                # CRITICAL: Save credentials after pairing
+                # The config object now contains credentials, but we need to persist them
+                # Store the config object temporarily so we can save credentials
+                self._paired_config = config
+                
+                # Save credentials to storage (will be loaded when connecting later)
+                from .storage import async_save_atv_credentials
+                # Note: We don't have entry yet, so we'll save during entry creation
+                # Store config in flow data for later
+                self.data["_paired_atv_config"] = config
+                
                 return await self.async_step_options()
             except Exception as finish_ex:
                 _LOGGER.error("Pairing failed with PIN: %s", finish_ex)
@@ -370,6 +379,12 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "dry_run": False,
         }
 
+        # Store paired config in flow data so we can save it after entry creation
+        if self._paired_config:
+            # Store in hass.data temporarily - will be saved in async_setup_entry
+            self.hass.data.setdefault(f"{DOMAIN}_pending_credentials", {})
+            self.hass.data[f"{DOMAIN}_pending_credentials"][self.data["pair_name"]] = self._paired_config
+        
         return self.async_create_entry(title=self.data["pair_name"], data=entry_data)
 
     @staticmethod

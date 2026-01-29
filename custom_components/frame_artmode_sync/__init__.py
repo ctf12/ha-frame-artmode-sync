@@ -47,6 +47,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.config_entries.async_update_entry(entry, data=new_data, options=new_options)
         _LOGGER.info("Migrated base_pairing_name from %s to %s for entry %s", old_default, new_default, entry.entry_id)
     
+    # CRITICAL: Save credentials if we paired during setup
+    pending_key = f"{DOMAIN}_pending_credentials"
+    if pending_key in hass.data:
+        pair_name = entry.data.get("pair_name")
+        if pair_name and pair_name in hass.data[pending_key]:
+            from .storage import async_save_atv_credentials
+            paired_config = hass.data[pending_key].pop(pair_name)
+            await async_save_atv_credentials(hass, entry, paired_config)
+            _LOGGER.info("Saved Apple TV credentials after pairing for entry %s", entry.entry_id)
+            # Clean up if empty
+            if not hass.data[pending_key]:
+                hass.data.pop(pending_key)
+    
     # Set up services once
     if DOMAIN not in hass.data.get("_frame_artmode_sync_services_setup", set()):
         await async_setup_services(hass)
