@@ -114,6 +114,24 @@ class FrameClient:
                     else:
                         raise
 
+                # If the TV issued/rotated a token during connection (common on first pairing),
+                # persist it so we don't re-pair and generate a new token on every restart.
+                try:
+                    tv_token = getattr(self._tv, "token", None) if self._tv else None
+                    if tv_token and tv_token != self.token:
+                        self.token = tv_token
+                        if token_callback:
+                            try:
+                                if asyncio.iscoroutinefunction(token_callback):
+                                    await token_callback(tv_token)
+                                else:
+                                    await asyncio.to_thread(token_callback, tv_token)
+                                _LOGGER.info("Saved Frame TV token for future connections")
+                            except Exception as ex:  # noqa: BLE001
+                                _LOGGER.warning("Error saving token: %s", ex)
+                except Exception as ex:  # noqa: BLE001
+                    _LOGGER.debug("Unable to persist Frame TV token after connect: %s", ex)
+
                 self._connection_failures = 0
                 connect_elapsed = asyncio.get_running_loop().time() - connect_start_time
                 _LOGGER.info("Connected to Frame TV at %s:%d (took %.2fs)", 
