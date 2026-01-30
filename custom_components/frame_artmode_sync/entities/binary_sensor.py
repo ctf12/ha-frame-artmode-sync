@@ -116,6 +116,8 @@ class FrameArtModeSyncATVActiveBinarySensor(FrameArtModeSyncEntity, BinarySensor
             return {}
         return {
             "playback_state": self.controller._atv_playback_state,
+            "source": getattr(self.controller, "_atv_state_source", "unknown"),
+            "fallback_entity": getattr(self.controller, "fallback_media_player", None),
         }
 
 

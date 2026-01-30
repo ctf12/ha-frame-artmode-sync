@@ -166,6 +166,7 @@ class PairController:
         self._enabled = config.get("enabled", True)
         self._atv_active = False
         self._atv_playback_state = "unknown"
+        self._atv_state_source: str = "unknown"  # "pyatv" | "fallback" | "unknown"
         self._desired_mode: str | None = None
         self._previous_desired_mode: str | None = None
         self._actual_artmode: bool | None = None
@@ -446,6 +447,7 @@ class PairController:
             old_active = self._atv_active
             self._atv_active = active
             self._atv_playback_state = playback_state
+            self._atv_state_source = "pyatv"
 
             _LOGGER.info("[atv_state_change] ATV state changed: active=%s -> %s, playback=%s", 
                         old_active, active, playback_state)
@@ -487,15 +489,41 @@ class PairController:
             return None, None
 
         state = (state_obj.state or "").lower()
+        attrs = getattr(state_obj, "attributes", {}) or {}
+
+        # Normalize into playback-like states for our controller.
         playback = state or "unknown"
+        if state in ("playing", "buffering", "loading"):
+            playback = "playing"
+        elif state in ("paused",):
+            playback = "paused"
+        elif state in ("idle", "standby", "off"):
+            playback = "idle"
+        elif state == "on":
+            # Some HA Apple TV entities report "on" even when actively playing.
+            # Use common media_player attributes to detect actual playback.
+            has_media = any(
+                attrs.get(k)
+                for k in (
+                    "media_title",
+                    "media_content_id",
+                    "media_content_type",
+                    "media_duration",
+                    "media_position",
+                )
+            )
+            if has_media:
+                playback = "playing"
+            else:
+                playback = "idle"
 
         active_mode = self.config.get("atv_active_mode", ATV_ACTIVE_MODE_PLAYING_OR_PAUSED)
         if active_mode == ATV_ACTIVE_MODE_POWER_ON:
             active = state not in ("off", "standby", "unknown", "unavailable")
         elif active_mode == ATV_ACTIVE_MODE_PLAYING_ONLY:
-            active = state == "playing"
+            active = playback == "playing"
         else:  # playing_or_paused
-            active = state in ("playing", "paused")
+            active = playback in ("playing", "paused")
 
         return active, playback
 
@@ -634,6 +662,7 @@ class PairController:
                     fallback_playback,
                 )
                 self._atv_active = True
+                self._atv_state_source = "fallback"
             if fallback_playback and fallback_playback != "unknown":
                 self._atv_playback_state = fallback_playback
 
