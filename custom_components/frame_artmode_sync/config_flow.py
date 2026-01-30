@@ -339,7 +339,53 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.warning("Apple TV scan failed: %s", ex)
             results = None
 
-        return results[0] if results else None
+        if results:
+            return results[0]
+
+        # Fallback: do a network scan and match by identifier OR name OR host.
+        # This makes manual entry more forgiving (users often enter the device name
+        # in the identifier field, or the IP may change).
+        try:
+            try:
+                results = await scan(loop=loop, timeout=12)
+            except TypeError:
+                results = await scan(timeout=12)
+        except Exception as ex:  # noqa: BLE001
+            _LOGGER.warning("Apple TV fallback network scan failed: %s", ex)
+            return None
+
+        if not results:
+            return None
+
+        identifier_str = str(identifier).strip() if identifier else ""
+        identifier_lower = identifier_str.lower()
+        host_str = str(host).strip() if host else ""
+
+        def _match(cfg) -> bool:
+            try:
+                if identifier_str:
+                    if str(getattr(cfg, "identifier", "")) == identifier_str:
+                        return True
+                    if str(getattr(cfg, "name", "")).strip().lower() == identifier_lower:
+                        return True
+                if host_str and str(getattr(cfg, "address", "")) == host_str:
+                    return True
+            except Exception:  # noqa: BLE001
+                return False
+            return False
+
+        matched = [cfg for cfg in results if _match(cfg)]
+        if len(matched) == 1:
+            return matched[0]
+        if len(matched) > 1:
+            _LOGGER.warning(
+                "Multiple Apple TVs matched identifier/name/host (identifier=%s host=%s); "
+                "please select from discovered list.",
+                identifier,
+                host,
+            )
+            return matched[0]
+        return None
 
     async def _is_companion_paired(self, config) -> bool:
         """Check if Companion credentials already work."""

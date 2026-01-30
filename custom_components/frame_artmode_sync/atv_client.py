@@ -60,12 +60,25 @@ async def async_get_atv_config(loop: asyncio.AbstractEventLoop, identifier: str 
             except TypeError:
                 results = await scan(timeout=12)
             if results:
-                results = [
-                    cfg
-                    for cfg in results
-                    if (identifier and str(cfg.identifier) == identifier)
-                    or str(cfg.address) == host
-                ]
+                identifier_str = str(identifier).strip() if identifier else ""
+                identifier_lower = identifier_str.lower()
+                host_str = str(host).strip()
+
+                def _match(cfg) -> bool:
+                    try:
+                        if identifier_str:
+                            if str(getattr(cfg, "identifier", "")) == identifier_str:
+                                return True
+                            # Users sometimes store the *name* instead of identifier; support that.
+                            if str(getattr(cfg, "name", "")).strip().lower() == identifier_lower:
+                                return True
+                        if host_str and str(getattr(cfg, "address", "")) == host_str:
+                            return True
+                    except Exception:  # noqa: BLE001
+                        return False
+                    return False
+
+                results = [cfg for cfg in results if _match(cfg)]
         except Exception as ex:  # noqa: BLE001
             _LOGGER.debug("fallback network scan failed: %s", ex)
             results = None
