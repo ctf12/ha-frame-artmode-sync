@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval, async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
@@ -37,6 +38,7 @@ from .const import (
     DEFAULT_WOL_BROADCAST,
     DEFAULT_WOL_DELAY_SECONDS,
     DEFAULT_WOL_RETRIES,
+    CONF_ATV_CREDENTIALS,
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_DRIFT_CORRECTION_COOLDOWN_MINUTES,
     DEFAULT_BREAKER_COOLDOWN_MINUTES,
@@ -1590,96 +1592,48 @@ class PairController:
         """Re-pair Apple TV (service)."""
         _LOGGER.info("Starting Apple TV re-pairing for %s", self.pair_name)
         async with self._lock:
+            # Disconnect current connection
+            await self.atv_client.async_disconnect()
+
+            # Clear stored Companion credentials on the config entry
+            if self._entry:
+                new_data = dict(self._entry.data)
+                new_options = dict(self._entry.options)
+                removed = False
+
+                if CONF_ATV_CREDENTIALS in new_data:
+                    new_data.pop(CONF_ATV_CREDENTIALS)
+                    removed = True
+                if CONF_ATV_CREDENTIALS in new_options:
+                    new_options.pop(CONF_ATV_CREDENTIALS)
+                    removed = True
+
+                if removed:
+                    self.hass.config_entries.async_update_entry(
+                        self._entry, data=new_data, options=new_options
+                    )
+                    _LOGGER.info("Cleared Apple TV Companion credentials for %s; please re-run config flow to re-pair.", self.pair_name)
+                else:
+                    _LOGGER.info("No Apple TV credentials stored for %s; nothing to clear.", self.pair_name)
+
+            # Notify user to reconfigure via UI (non-blocking)
             try:
-                # Disconnect current connection
-                await self.atv_client.async_disconnect()
-                
-                # Clear saved credentials
-                entry = self._entry
-                if entry:
-                    from .storage import async_load_atv_credentials, async_save_atv_credentials
-                    from homeassistant.helpers import storage
-                    
-                    # Clear credentials from storage
-                    storage_key = f"{entry.domain}_{entry.entry_id}"
-                    store = storage.Store(self.hass, entry.version, storage_key)
-                    stored = await store.async_load()
-                    if stored:
-                        stored.pop("atv_credentials", None)
-                        await store.async_save(stored)
-                        _LOGGER.info("Cleared saved Apple TV credentials")
-                
-                # Re-pair using pyatv
-                from pyatv import scan, pair, connect
-                from pyatv.const import Protocol
-                try:
-                    from pyatv.exceptions import AuthenticationError, NotPairedError, PairingError
-                except ImportError:
-                    # Fallback for pyatv versions that don't have these exceptions
-                    AuthenticationError = Exception  # type: ignore[assignment, misc]
-                    NotPairedError = Exception  # type: ignore[assignment, misc]
-                    PairingError = Exception  # type: ignore[assignment, misc]
-                
-                loop = asyncio.get_running_loop()
-                results = None
-                
-                # Scan for Apple TV
-                try:
-                    if self.atv_client.identifier:
-                        try:
-                            results = await scan(loop=loop, identifier=self.atv_client.identifier, timeout=10)
-                        except TypeError:
-                            results = await scan(identifier=self.atv_client.identifier, timeout=10)
-                    else:
-                        try:
-                            results = await scan(loop=loop, hosts=[self.atv_client.host], timeout=10)
-                        except TypeError:
-                            results = await scan(hosts=[self.atv_client.host], timeout=10)
-                except Exception as scan_ex:
-                    _LOGGER.error("Failed to scan for Apple TV: %s", scan_ex)
-                    raise
-                
-                if not results:
-                    _LOGGER.error("Apple TV not found for re-pairing")
-                    raise Exception("Apple TV not found")
-                
-                config = results[0]
-                
-                # Start pairing
-                pairing = None
-                pairing_protocol = None
-                for protocol in config.protocols:
-                    if protocol in (Protocol.MRP, Protocol.AirPlay, Protocol.Companion):
-                        try:
-                            try:
-                                pairing = await pair(config, protocol, loop=loop)
-                            except TypeError:
-                                pairing = await pair(config, protocol)
-                            if pairing:
-                                pairing_protocol = protocol
-                                break
-                        except Exception:
-                            continue
-                
-                if not pairing:
-                    _LOGGER.error("No supported pairing protocol found")
-                    raise Exception("No supported pairing protocol")
-                
-                # Get PIN
-                pin = await pairing.begin()
-                _LOGGER.info("Apple TV pairing PIN: %s (check Apple TV screen)", pin)
-                
-                # Wait for user to enter PIN (in a real implementation, this would be handled via a config flow step)
-                # For now, we'll raise an exception indicating the user needs to use the config flow
-                await pairing.close()
-                raise Exception(
-                    f"Apple TV re-pairing requires entering PIN {pin} on the Apple TV screen. "
-                    "Please use the integration options to re-pair, or call the service with a PIN parameter."
+                await self.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": "Frame Art Mode Sync",
+                        "message": "Apple TV credentials were cleared. Open Settings → Devices & Services → Frame Art Mode Sync → Reconfigure to pair Companion again."
+                    },
+                    blocking=False,
                 )
-                
-            except Exception as ex:
-                _LOGGER.error("Apple TV re-pairing failed: %s", ex)
-                raise
+            except Exception:  # noqa: BLE001
+                pass
+
+            # Provide explicit guidance to caller
+            raise HomeAssistantError(
+                "Apple TV credentials cleared. Re-run the Frame Art Mode Sync config flow to re-pair Companion."
+            )
 
     async def async_repair_samsung_tv(self) -> None:
         """Re-pair Samsung TV (service)."""
@@ -1807,4 +1761,3 @@ class PairController:
                 f"{ts} [{event['type']}] {event['result']}: {event['message']}"
             )
         return "\n".join(reversed(lines))
-

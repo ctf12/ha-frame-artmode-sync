@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Callable
+from typing import Any, Callable
 
-from pyatv import connect, scan, pair
+from pyatv import connect, scan
 from pyatv.const import DeviceState, PowerState, Protocol
 from pyatv.core import PushUpdater
 try:
@@ -27,11 +27,50 @@ from .const import (
     ATV_ACTIVE_MODE_PLAYING_ONLY,
     ATV_ACTIVE_MODE_PLAYING_OR_PAUSED,
     ATV_ACTIVE_MODE_POWER_ON,
+    CONF_ATV_CREDENTIALS,
     DEFAULT_ATV_DEBOUNCE_SECONDS,
     DEFAULT_ATV_GRACE_SECONDS_ON_DISCONNECT,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def async_get_atv_config(loop: asyncio.AbstractEventLoop, identifier: str | None, host: str) -> Any | None:
+    """Build pyatv config via scan using identifier (preferred) or host."""
+    results = None
+    try:
+        if identifier:
+            try:
+                results = await scan(loop=loop, identifier=identifier, timeout=10)
+            except TypeError:
+                results = await scan(identifier=identifier, timeout=10)
+        else:
+            try:
+                results = await scan(loop=loop, hosts=[host], timeout=10)
+            except TypeError:
+                results = await scan(hosts=[host], timeout=10)
+    except Exception as ex:  # noqa: BLE001
+        _LOGGER.debug("pyatv scan failed: %s", ex)
+        results = None
+
+    if not results:
+        try:
+            try:
+                results = await scan(loop=loop, timeout=12)
+            except TypeError:
+                results = await scan(timeout=12)
+            if results:
+                results = [
+                    cfg
+                    for cfg in results
+                    if (identifier and str(cfg.identifier) == identifier)
+                    or str(cfg.address) == host
+                ]
+        except Exception as ex:  # noqa: BLE001
+            _LOGGER.debug("fallback network scan failed: %s", ex)
+            results = None
+
+    return results[0] if results else None
 
 
 class ATVClient:
@@ -79,157 +118,66 @@ class ATVClient:
         async with self._lock:
             try:
                 loop = asyncio.get_running_loop()
-                results = None
-                
                 _LOGGER.info("Scanning for Apple TV at %s (identifier=%s)", self.host, self.identifier)
-                
-                # Try targeted scan first (faster if device is awake)
-                try:
-                    if self.identifier:
-                        _LOGGER.debug("Scanning by identifier: %s", self.identifier)
-                        try:
-                            results = await scan(loop=loop, identifier=self.identifier, timeout=10)
-                        except TypeError:
-                            results = await scan(identifier=self.identifier, timeout=10)
-                    else:
-                        _LOGGER.debug("Scanning by host: %s", self.host)
-                        try:
-                            results = await scan(loop=loop, hosts=[self.host], timeout=10)
-                        except TypeError:
-                            results = await scan(hosts=[self.host], timeout=10)
-                except Exception as scan_ex:
-                    _LOGGER.debug("Targeted scan failed: %s", scan_ex)
-                    results = None
-
-                # If targeted scan failed, try network-wide scan (device might be sleeping)
-                if not results:
-                    _LOGGER.info("Targeted scan found nothing, trying network-wide scan (device may be sleeping)...")
-                    try:
-                        try:
-                            results = await scan(loop=loop, timeout=15)
-                        except TypeError:
-                            results = await scan(timeout=15)
-                        
-                        # Filter results to find our device
-                        if results:
-                            matching = []
-                            for atv in results:
-                                if self.identifier and str(atv.identifier) == self.identifier:
-                                    matching.append(atv)
-                                elif str(atv.address) == self.host:
-                                    matching.append(atv)
-                            
-                            if matching:
-                                results = matching
-                                _LOGGER.info("Found Apple TV in network scan: %s at %s", 
-                                           results[0].name, results[0].address)
-                            else:
-                                _LOGGER.debug("Network scan found %d devices, but none match %s/%s", 
-                                            len(results), self.host, self.identifier)
-                                results = None
-                    except Exception as network_scan_ex:
-                        _LOGGER.debug("Network-wide scan also failed: %s", network_scan_ex)
-                        results = None
-
-                if not results:
+                config = await async_get_atv_config(loop, self.identifier, self.host)
+                if not config:
                     _LOGGER.warning(
-                        "No Apple TV found at %s (identifier=%s). "
-                        "Device may be sleeping or not responding to discovery. "
-                        "Will retry automatically.",
-                        self.host, self.identifier
+                        "No Apple TV found at %s (identifier=%s). Will retry.",
+                        self.host,
+                        self.identifier,
                     )
                     return False
 
-                config = results[0]
-                _LOGGER.info("Found Apple TV: %s at %s (identifier: %s)", 
-                           config.name, config.address, config.identifier)
+                companion_cred = self._get_companion_credential()
+                if companion_cred:
+                    self._apply_companion_credential(config, companion_cred)
+                else:
+                    _LOGGER.info(
+                        "No stored Companion credentials for Apple TV at %s; pairing is required",
+                        self.host,
+                    )
 
-                # CRITICAL: Load saved credentials and apply to config
-                if self.hass and self.entry:
-                    from .storage import async_load_atv_credentials
-                    saved_creds = await async_load_atv_credentials(self.hass, self.entry)
-                    if saved_creds:
-                        _LOGGER.debug("Loading saved Apple TV credentials")
-                        # Apply credentials to config for each protocol
-                        for protocol in config.protocols:
-                            protocol_name = protocol.name if hasattr(protocol, 'name') else str(protocol)
-                            if protocol_name in saved_creds:
-                                try:
-                                    # Parse credential string back to credential object
-                                    # pyatv credentials are typically strings that can be passed to set_credentials
-                                    cred_str = saved_creds[protocol_name]
-                                    if hasattr(config, 'set_credentials'):
-                                        config.set_credentials(protocol, cred_str)
-                                        _LOGGER.debug("Restored credentials for protocol %s", protocol_name)
-                                except Exception as cred_ex:
-                                    _LOGGER.warning("Failed to restore credentials for protocol %s: %s", protocol_name, cred_ex)
-
-                # Try to connect (may require pairing)
                 try:
-                    # pyatv compatibility: some versions require loop parameter
-                    try:
-                        self.atv = await connect(config, loop=loop)
-                    except TypeError:
-                        # Fallback for versions that don't accept loop parameter
-                        self.atv = await connect(config)
-                except Exception as conn_ex:
-                    # Check if it's an authentication/pairing error
-                    is_auth_error = False
-                    is_pairing_error = False
-                    
-                    if PYATV_EXCEPTIONS_AVAILABLE:
-                        is_auth_error = isinstance(conn_ex, (AuthenticationError, NotPairedError))
-                        is_pairing_error = isinstance(conn_ex, PairingError)
-                    else:
-                        # Fallback: check error message if exceptions not available
-                        error_str = str(conn_ex).lower()
-                        is_auth_error = "not paired" in error_str or "authentication" in error_str
-                        is_pairing_error = "pairing" in error_str and not is_auth_error
-                    
-                    if is_auth_error:
-                        _LOGGER.warning(
-                            "Apple TV at %s requires pairing. "
-                            "Please pair this device using the Home Assistant Apple TV integration first, "
-                            "or use 'atvremote pair' command. Error: %s",
-                            self.host, conn_ex
-                        )
-                        # Note: We could implement pairing here, but it's better to use HA's Apple TV integration
-                        # or atvremote for initial pairing, then this integration can connect
-                        return False
-                    elif is_pairing_error:
-                        _LOGGER.warning(
-                            "Apple TV pairing error at %s: %s. "
-                            "Device may need to be re-paired.",
-                            self.host, conn_ex
-                        )
-                        return False
-                    # If not an auth/pairing error, continue to general error handling below
-                    raise conn_ex
-                
-                self.push_updater = self.atv.push_updater
+                    self.atv = await self._connect_companion(config, loop)
+                except (AuthenticationError, NotPairedError) as exc:
+                    _LOGGER.warning(
+                        "Apple TV not paired for Companion (or credentials invalid). "
+                        "Reconfigure/re-pair the integration to restore push updates. (%s)",
+                        type(exc).__name__,
+                    )
+                    # Not recoverable automatically: stop background reconnect loop until user re-pairs.
+                    self._should_reconnect = False
+                    await self._handle_disconnect()
+                    await self._set_state(False, "not_paired")
+                    return False
+                except PairingError as exc:
+                    _LOGGER.warning("Apple TV pairing error: %s", exc)
+                    await self._handle_disconnect()
+                    return False
 
-                self._listener = ATVPushListener(self)
-                self.push_updater.listener = self._listener
-                self.push_updater.start()
+                self.push_updater = getattr(self.atv, "push_updater", None)
+                if self.push_updater:
+                    self._listener = ATVPushListener(self)
+                    self.push_updater.listener = self._listener
+                    self.push_updater.start()
+                else:
+                    _LOGGER.warning("pyatv push updater unavailable; push updates disabled")
 
-                # Initial state
                 await self._update_state()
-                _LOGGER.info("Connected to Apple TV, initial state: active=%s", self._current_state)
-
+                _LOGGER.info("Connected to Apple TV via Companion, active=%s", self._current_state)
+                self._reconnect_backoff = 10.0
                 return True
             except Exception as ex:
-                # Log more detailed error information
                 error_type = type(ex).__name__
                 error_msg = str(ex)
                 _LOGGER.warning(
-                    "Failed to connect to Apple TV at %s: %s (%s). "
-                    "This may indicate the device needs pairing, is sleeping, or network issues.",
-                    self.host, error_msg, error_type
+                    "Failed to connect to Apple TV at %s: %s (%s).",
+                    self.host,
+                    error_msg,
+                    error_type,
                 )
-                # Log full exception for debugging
                 _LOGGER.debug("Full connection error traceback:", exc_info=True)
                 await self._handle_disconnect()
-                # Schedule reconnect attempt if enabled
                 if self._should_reconnect:
                     self._schedule_reconnect()
                 return False
@@ -267,7 +215,9 @@ class ATVClient:
 
         if self.atv:
             try:
-                self.atv.close()
+                close_result = self.atv.close()
+                if asyncio.iscoroutine(close_result):
+                    await close_result
             except Exception:
                 pass
             self.atv = None
@@ -283,6 +233,72 @@ class ATVClient:
         else:
             self._grace_until = None
             await self._set_state(False, "disconnected")
+
+    def _get_companion_credential(self) -> str | None:
+        """Fetch Companion credential from config entry data/options."""
+        if not self.entry:
+            return None
+
+        creds = self.entry.data.get(CONF_ATV_CREDENTIALS) or self.entry.options.get(CONF_ATV_CREDENTIALS)
+        if not creds:
+            return None
+
+        # If keys are Protocol objects or strings, normalize to lower-case comparison
+        if isinstance(creds, dict):
+            for key, value in creds.items():
+                if not value:
+                    continue
+                if getattr(key, "name", "").lower() == "companion":
+                    return value
+                key_str = str(key).lower()
+                if key_str == "companion":
+                    return value
+                if Protocol is not None and str(getattr(Protocol.Companion, "value", "")).lower() == key_str:
+                    return value
+
+        candidates = (
+            "companion",
+            "Companion",
+            getattr(Protocol.Companion, "name", "companion"),
+            str(getattr(Protocol.Companion, "value", "companion")),
+            str(Protocol.Companion),
+        )
+        for candidate in candidates:
+            if candidate in creds:
+                return creds[candidate]
+            if str(candidate).lower() in creds:
+                return creds[str(candidate).lower()]
+
+        return None
+
+    def _apply_companion_credential(self, config: Any, credential: str) -> None:
+        """Apply Companion credential to pyatv config."""
+        try:
+            if hasattr(config, "set_credentials"):
+                config.set_credentials(Protocol.Companion, credential)
+                _LOGGER.debug("Applied Companion credential via set_credentials")
+                return
+        except Exception as ex:  # noqa: BLE001
+            _LOGGER.debug("set_credentials failed: %s", ex)
+
+        try:
+            creds = getattr(config, "credentials", None)
+            if isinstance(creds, dict):
+                creds[Protocol.Companion] = credential
+                config.credentials = creds
+                _LOGGER.debug("Applied Companion credential via credentials mapping")
+        except Exception as ex:  # noqa: BLE001
+            _LOGGER.debug("Fallback credential application failed: %s", ex)
+
+    async def _connect_companion(self, config: Any, loop: asyncio.AbstractEventLoop):
+        """Connect using Companion protocol with pyatv compatibility fallbacks."""
+        try:
+            return await connect(config, protocol=Protocol.Companion, loop=loop)
+        except TypeError:
+            # Fallback for versions that don't accept loop parameter. Do NOT fall back
+            # to protocol-less connect as that can connect via AirPlay/MRP and break
+            # Companion-only push updates.
+            return await connect(config, protocol=Protocol.Companion)
     
     def _schedule_reconnect(self) -> None:
         """Schedule a reconnection attempt with exponential backoff."""
@@ -481,7 +497,16 @@ class ATVPushListener(PushListener, PowerListener):
             return
         
         playback_state = self.client._playback_state_from_playing(playstatus)
-        active = self.client._compute_active()
+        # Compute active using the NEW playback_state (not the stale cached one)
+        # to avoid lag/incorrect transitions for playing_only/playing_or_paused modes.
+        if self.client._grace_until and dt_util.utcnow() < self.client._grace_until:
+            active = self.client._current_state
+        elif self.client.active_mode == ATV_ACTIVE_MODE_POWER_ON:
+            active = self.client._power_state == PowerState.On
+        elif self.client.active_mode == ATV_ACTIVE_MODE_PLAYING_ONLY:
+            active = playback_state == "playing"
+        else:  # playing_or_paused
+            active = playback_state in ("playing", "paused")
         
         # Create task and add to set atomically
         task = asyncio.create_task(self.client._set_state(active, playback_state))
@@ -504,4 +529,3 @@ class ATVPushListener(PushListener, PowerListener):
         task = asyncio.create_task(self.client._set_state(active, self.client._playback_state))
         self.client._listener_tasks.add(task)
         task.add_done_callback(self.client._listener_tasks.discard)
-

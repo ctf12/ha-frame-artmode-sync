@@ -15,6 +15,10 @@ from homeassistant.helpers import selector
 
 from .const import (
     AWAY_POLICY_DISABLED,
+    CONF_ATV_CREDENTIALS,
+    CONF_ATV_HOST,
+    CONF_ATV_IDENTIFIER,
+    CONF_ATV_PAIRED_PROTOCOL,
     DEFAULT_ACTIVE_END,
     DEFAULT_ACTIVE_START,
     DEFAULT_ATV_ACTIVE_MODE_PLAYING_OR_PAUSED,
@@ -109,8 +113,8 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.discovered_atvs: list[dict[str, str]] = []
         self.data: dict[str, Any] = {}
         self._pairing = None
-        self._pairing_protocol = None
-        self._paired_config = None  # Store paired Apple TV config for credential saving
+        self._pairing_config = None
+        self._pairing_pin_requested = False
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -196,212 +200,245 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_pair_apple_tv(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Pair with Apple TV if needed."""
-        _LOGGER.info("Entering async_step_pair_apple_tv (user_input=%s)", "provided" if user_input else "None")
-        
-        if not PYATV_AVAILABLE:
-            # Skip pairing if pyatv not available, proceed to options
-            _LOGGER.warning("pyatv not available, skipping pairing")
+        """Pair with Apple TV using Companion protocol only."""
+        if not PYATV_AVAILABLE or Protocol is None:
+            _LOGGER.warning("pyatv unavailable; skipping Apple TV pairing")
             return await self.async_step_options()
-        
+
         apple_tv_host = self.data.get("apple_tv_host")
         apple_tv_identifier = self.data.get("apple_tv_identifier")
-        
-        _LOGGER.info("Apple TV pairing: host=%s, identifier=%s", apple_tv_host, apple_tv_identifier)
-        
-        if not apple_tv_host:
-            _LOGGER.warning("No Apple TV host provided, skipping pairing")
+
+        if not apple_tv_host and not apple_tv_identifier:
+            _LOGGER.warning("No Apple TV host or identifier provided; skipping pairing")
             return await self.async_step_options()
-        
-        # Try to scan for the Apple TV
+
+        config = self._pairing_config or await self._get_atv_config()
+        if config is None:
+            _LOGGER.warning("Could not find Apple TV for pairing (host=%s identifier=%s)", apple_tv_host, apple_tv_identifier)
+            return self.async_show_form(
+                step_id="pair_apple_tv",
+                data_schema=vol.Schema({}),
+                errors={"base": "not_found"},
+            )
+
+        # Persist resolved host/identifier
+        self.data["apple_tv_host"] = str(config.address)
+        if getattr(config, "identifier", None):
+            self.data["apple_tv_identifier"] = str(config.identifier)
+
+        if user_input is None:
+            already_paired = await self._is_companion_paired(config)
+            if already_paired:
+                _LOGGER.info("Apple TV already paired for Companion; continuing setup")
+                return await self.async_step_options()
+
+            try:
+                pin = await self._start_companion_pairing(config)
+            except PairingError as err:
+                _LOGGER.warning("Unable to start Companion pairing: %s", err)
+                return self.async_show_form(
+                    step_id="pair_apple_tv",
+                    data_schema=vol.Schema({}),
+                    errors={"base": "pairing_failed"},
+                )
+
+            schema = vol.Schema({}) if pin is None else vol.Schema({vol.Required("pin"): str})
+            description_placeholders = {
+                "instructions": "On Apple TV: Settings → Remotes and Devices → Remote App and Devices. Approve the request. "
+                "If a PIN appears, enter it below; otherwise just continue.",
+                "pin": pin or "Check your Apple TV screen",
+            }
+            return self.async_show_form(
+                step_id="pair_apple_tv",
+                data_schema=schema,
+                description_placeholders=description_placeholders,
+                errors={},
+            )
+
+        # User continued or provided PIN
+        pin = user_input.get("pin") if user_input else None
+        if self._pairing_pin_requested and not pin:
+            return self.async_show_form(
+                step_id="pair_apple_tv",
+                data_schema=vol.Schema({vol.Required("pin"): str}),
+                errors={"pin": "pin_required"},
+            )
+
+        errors: dict[str, str] = {}
         try:
-            loop = asyncio.get_running_loop()
-            try:
-                if apple_tv_identifier:
-                    results = await scan(loop=loop, identifier=apple_tv_identifier, timeout=10)
-                else:
-                    results = await scan(loop=loop, hosts=[apple_tv_host], timeout=10)
-            except TypeError:
-                if apple_tv_identifier:
-                    results = await scan(identifier=apple_tv_identifier, timeout=10)
-                else:
-                    results = await scan(hosts=[apple_tv_host], timeout=10)
-            
-            if not results:
-                _LOGGER.warning("Could not find Apple TV for pairing at %s (identifier=%s), proceeding without pairing", 
-                              apple_tv_host, apple_tv_identifier)
-                return await self.async_step_options()
-            
-            config = results[0]
-            _LOGGER.info("Found Apple TV: %s at %s, checking if pairing is needed", config.name, config.address)
-            
-            # Try to connect to see if pairing is needed
-            try:
-                try:
-                    atv = await connect(config, loop=loop)
-                except TypeError:
-                    atv = await connect(config)
-                # Connection successful, no pairing needed
-                await atv.close()
-                _LOGGER.info("Apple TV already paired (connection successful), proceeding to options")
-                return await self.async_step_options()
-            except Exception as auth_ex:
-                # Check if it's an authentication/pairing error
-                is_pairing_required = False
-                if PYATV_AVAILABLE:
-                    try:
-                        is_pairing_required = isinstance(auth_ex, (AuthenticationError, NotPairedError))
-                    except Exception:
-                        # Fallback: check error message
-                        error_msg = str(auth_ex).lower()
-                        is_pairing_required = "not paired" in error_msg or "authentication" in error_msg
-                
-                if is_pairing_required:
-                    _LOGGER.info("Apple TV requires pairing: %s", auth_ex)
-                    # Pairing is required - continue to pairing flow
-                    pass
-                else:
-                    # Some other error, proceed to options
-                    _LOGGER.warning("Error checking pairing status (not a pairing error): %s, proceeding anyway", auth_ex)
-                    return await self.async_step_options()
-            
-            # Pairing is needed
-            if user_input is None:
-                # Start pairing process
-                _LOGGER.info("Starting Apple TV pairing process...")
-                try:
-                    # Find MRP protocol (most common for Apple TV)
-                    pairing = None
-                    pairing_protocol = None
-                    if Protocol is None:
-                        _LOGGER.error("pyatv Protocol not available, cannot pair")
-                        return await self.async_step_options()
-                    
-                    _LOGGER.info("Available protocols: %s", [p.name if hasattr(p, 'name') else str(p) for p in config.protocols])
-                    
-                    for protocol in config.protocols:
-                        protocol_name = protocol.name if hasattr(protocol, 'name') else str(protocol)
-                        _LOGGER.debug("Trying pairing protocol: %s", protocol_name)
-                        if protocol in (Protocol.MRP, Protocol.AirPlay, Protocol.Companion):
-                            try:
-                                _LOGGER.info("Attempting to pair using protocol: %s", protocol_name)
-                                try:
-                                    pairing = await pair(config, protocol, loop=loop)
-                                except TypeError:
-                                    pairing = await pair(config, protocol)
-                                if pairing:
-                                    pairing_protocol = protocol
-                                    _LOGGER.info("Successfully initiated pairing with protocol: %s", protocol_name)
-                                    break
-                            except Exception as pair_protocol_ex:
-                                _LOGGER.debug("Pairing failed with protocol %s: %s", protocol_name, pair_protocol_ex)
-                                continue
-                    
-                    if not pairing:
-                        _LOGGER.error("No supported pairing protocol found. Available protocols: %s", 
-                                      [p.name if hasattr(p, 'name') else str(p) for p in config.protocols])
-                        return await self.async_step_options()
-                    
-                    # Store pairing object for PIN entry
-                    self._pairing = pairing
-                    self._pairing_protocol = pairing_protocol
-                    
-                    # Get PIN (will be displayed on Apple TV)
-                    try:
-                        _LOGGER.info("Calling pairing.begin() to get PIN code...")
-                        pin = await pairing.begin()
-                        if pin:
-                            _LOGGER.info("Apple TV pairing PIN code: %s (also displayed on Apple TV screen)", pin)
-                        else:
-                            _LOGGER.warning("Pairing.begin() returned None/empty PIN - check Apple TV screen for PIN")
-                            pin = None
-                    except Exception as begin_ex:
-                        _LOGGER.error("Error starting pairing (pairing.begin() failed): %s", begin_ex, exc_info=True)
-                        # Clean up and show error
-                        try:
-                            await pairing.close()
-                        except Exception:
-                            pass
-                        self._pairing = None
-                        return self.async_show_form(
-                            step_id="pair_apple_tv",
-                            data_schema=vol.Schema({
-                                vol.Required("pin", default=""): str,
-                            }),
-                            errors={"base": "pairing_failed"},
-                        )
-                    
-                    # Show form with PIN (PIN should appear on Apple TV screen, and we'll show it in logs)
-                    pin_display = str(pin) if pin else "Check your Apple TV screen"
-                    _LOGGER.info("Showing pairing form. PIN to enter: %s", pin_display)
-                    
-                    return self.async_show_form(
-                        step_id="pair_apple_tv",
-                        data_schema=vol.Schema({
-                            vol.Required("pin", default=""): str,
-                        }),
-                        description_placeholders={
-                            "pin": pin_display,
-                        },
-                        errors={},
-                    )
-                except Exception as pair_ex:
-                    _LOGGER.error("Error starting pairing: %s", pair_ex)
-                    return self.async_show_form(
-                        step_id="pair_apple_tv",
-                        data_schema=vol.Schema({
-                            vol.Required("pin", default=""): str,
-                        }),
-                        errors={"base": "pairing_failed"},
-                    )
-            
-            # User entered PIN
-            pin = user_input.get("pin", "")
-            if not pin:
-                return self.async_show_form(
-                    step_id="pair_apple_tv",
-                    data_schema=vol.Schema({
-                        vol.Required("pin", default=""): str,
-                    }),
-                    errors={"pin": "pin_required"},
-                )
-            
-            try:
-                # Complete pairing with the PIN entered by user
-                await self._pairing.finish(pin)
-                _LOGGER.info("Successfully paired with Apple TV")
-                
-                # CRITICAL: Save credentials after pairing
-                # The config object now contains credentials, but we need to persist them
-                # Store the config object temporarily so we can save credentials
-                self._paired_config = config
-                
-                # Save credentials to storage (will be loaded when connecting later)
-                from .storage import async_save_atv_credentials
-                # Note: We don't have entry yet, so we'll save during entry creation
-                # Store config in flow data for later
-                self.data["_paired_atv_config"] = config
-                
-                return await self.async_step_options()
-            except Exception as finish_ex:
-                _LOGGER.error("Pairing failed with PIN: %s", finish_ex)
-                # Clean up pairing object on failure
-                try:
-                    await self._pairing.close()
-                except Exception:
-                    pass
-                self._pairing = None
-                return self.async_show_form(
-                    step_id="pair_apple_tv",
-                    data_schema=vol.Schema({
-                        vol.Required("pin", default=""): str,
-                    }),
-                    errors={"pin": "pairing_failed"},
-                )
-        except Exception as ex:
-            _LOGGER.error("Error during pairing process: %s", ex)
-            # Proceed to options even if pairing fails (user can pair manually later)
+            await self._finish_companion_pairing(config, pin)
             return await self.async_step_options()
+        except PairingError as err:
+            _LOGGER.warning("Companion pairing failed: %s", err)
+            errors["base"] = "pairing_failed"
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Unexpected error finishing pairing: %s", err)
+            errors["base"] = "pairing_failed"
+
+        # Restart pairing for retry after a failure
+        try:
+            pin = await self._start_companion_pairing(config)
+        except PairingError:
+            pin = None
+
+        schema = vol.Schema({}) if pin is None else vol.Schema({vol.Required("pin"): str})
+        description_placeholders = {
+            "instructions": "On Apple TV: Settings → Remotes and Devices → Remote App and Devices. Approve the request. "
+            "If a PIN appears, enter it below; otherwise just continue.",
+            "pin": pin or "Check your Apple TV screen",
+        }
+        return self.async_show_form(
+            step_id="pair_apple_tv",
+            data_schema=schema,
+            description_placeholders=description_placeholders,
+            errors=errors,
+        )
+
+    async def _get_atv_config(self):
+        """Find Apple TV config by identifier or host."""
+        if scan is None:
+            return None
+
+        identifier = self.data.get("apple_tv_identifier")
+        host = self.data.get("apple_tv_host")
+        loop = asyncio.get_running_loop()
+
+        results = None
+        try:
+            if identifier:
+                try:
+                    results = await scan(loop=loop, identifier=identifier, timeout=10)
+                except TypeError:
+                    results = await scan(identifier=identifier, timeout=10)
+            elif host:
+                try:
+                    results = await scan(loop=loop, hosts=[host], timeout=10)
+                except TypeError:
+                    results = await scan(hosts=[host], timeout=10)
+        except Exception as ex:  # noqa: BLE001
+            _LOGGER.warning("Apple TV scan failed: %s", ex)
+            results = None
+
+        return results[0] if results else None
+
+    async def _is_companion_paired(self, config) -> bool:
+        """Check if Companion credentials already work."""
+        loop = asyncio.get_running_loop()
+        try:
+            try:
+                atv = await connect(config, protocol=Protocol.Companion, loop=loop)
+            except TypeError:
+                # Fallback for versions that don't accept loop parameter. Do NOT
+                # fall back to protocol-less connect, as that can succeed via
+                # AirPlay/MRP and produce false positives for Companion pairing.
+                atv = await connect(config, protocol=Protocol.Companion)
+            try:
+                await atv.close()
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+        except (AuthenticationError, NotPairedError, PairingError):
+            return False
+        except Exception as ex:  # noqa: BLE001
+            _LOGGER.debug("Companion pairing check failed: %s", ex)
+            return False
+
+    async def _start_companion_pairing(self, config):
+        """Begin Companion pairing and return PIN if required."""
+        self._pairing_config = config
+        loop = asyncio.get_running_loop()
+
+        if Protocol is not None and hasattr(config, "protocols") and Protocol.Companion not in config.protocols:
+            raise PairingError("companion_not_supported")
+
+        try:
+            try:
+                self._pairing = await pair(config, Protocol.Companion, loop=loop)
+            except TypeError:
+                self._pairing = await pair(config, Protocol.Companion)
+        except Exception as ex:  # noqa: BLE001
+            self._pairing = None
+            raise PairingError(str(ex)) from ex
+
+        if not self._pairing:
+            raise PairingError("pairing_not_started")
+
+        try:
+            pin = await self._pairing.begin()
+        except Exception as ex:  # noqa: BLE001
+            await self._close_pairing()
+            raise PairingError(str(ex)) from ex
+
+        self._pairing_pin_requested = bool(pin)
+        return pin
+
+    async def _finish_companion_pairing(self, config, pin: str | None) -> None:
+        """Finish Companion pairing handling pyatv API variants."""
+        if not self._pairing:
+            raise PairingError("pairing_missing")
+
+        try:
+            if pin:
+                try:
+                    await self._pairing.finish(pin)
+                except TypeError:
+                    if hasattr(self._pairing, "pin"):
+                        try:
+                            setattr(self._pairing, "pin", pin)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    await self._pairing.finish()
+            else:
+                try:
+                    await self._pairing.finish()
+                except TypeError:
+                    await self._pairing.finish(None)
+
+            credentials = self._extract_credentials(config)
+            self.data[CONF_ATV_CREDENTIALS] = credentials
+            self.data[CONF_ATV_PAIRED_PROTOCOL] = "companion"
+            self.data[CONF_ATV_HOST] = str(config.address)
+            if getattr(config, "identifier", None):
+                self.data[CONF_ATV_IDENTIFIER] = str(config.identifier)
+        finally:
+            await self._close_pairing()
+
+    def _extract_credentials(self, config) -> dict[str, Any] | None:
+        """Extract serializable credentials from pyatv config."""
+        try:
+            creds = getattr(config, "credentials", None)
+            if isinstance(creds, dict) and creds:
+                normalized: dict[str, Any] = {}
+                for key, value in creds.items():
+                    if not value:
+                        continue
+                    name = key.name.lower() if hasattr(key, "name") else str(key).lower()
+                    normalized[name] = value
+                if normalized:
+                    return normalized
+        except Exception:  # noqa: BLE001
+            pass
+
+        if Protocol is not None:
+            try:
+                cred = config.get_credentials(Protocol.Companion)
+                if cred:
+                    return {"companion": str(cred)}
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+
+    async def _close_pairing(self) -> None:
+        """Close pairing handler safely."""
+        pairing = self._pairing
+        self._pairing = None
+        self._pairing_config = None
+        self._pairing_pin_requested = False
+        if pairing:
+            try:
+                await pairing.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def async_step_options(
         self, user_input: dict[str, Any] | None = None
@@ -430,6 +467,10 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Create entry with defaults
         entry_data = {
             **self.data,
+            CONF_ATV_CREDENTIALS: self.data.get(CONF_ATV_CREDENTIALS),
+            CONF_ATV_IDENTIFIER: self.data.get("apple_tv_identifier"),
+            CONF_ATV_HOST: self.data.get("apple_tv_host"),
+            CONF_ATV_PAIRED_PROTOCOL: self.data.get(CONF_ATV_PAIRED_PROTOCOL, "companion" if self.data.get(CONF_ATV_CREDENTIALS) else None),
             "enabled": DEFAULT_ENABLED,
             "active_start": DEFAULT_ACTIVE_START,
             "active_end": DEFAULT_ACTIVE_END,
@@ -455,12 +496,6 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "startup_grace_seconds": DEFAULT_STARTUP_GRACE_SECONDS,
             "dry_run": False,
         }
-
-        # Store paired config in flow data so we can save it after entry creation
-        if self._paired_config:
-            # Store in hass.data temporarily - will be saved in async_setup_entry
-            self.hass.data.setdefault(f"{DOMAIN}_pending_credentials", {})
-            self.hass.data[f"{DOMAIN}_pending_credentials"][self.data["pair_name"]] = self._paired_config
         
         return self.async_create_entry(title=self.data["pair_name"], data=entry_data)
 
@@ -726,4 +761,3 @@ class FrameArtModeSyncOptionsFlowHandler(config_entries.OptionsFlow):
         })
         
         return schema
-

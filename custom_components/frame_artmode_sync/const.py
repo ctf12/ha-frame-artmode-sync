@@ -4,6 +4,12 @@ from __future__ import annotations
 
 DOMAIN = "frame_artmode_sync"
 
+# Apple TV / pyatv
+CONF_ATV_CREDENTIALS = "atv_credentials"
+CONF_ATV_IDENTIFIER = "apple_tv_identifier"
+CONF_ATV_HOST = "apple_tv_host"
+CONF_ATV_PAIRED_PROTOCOL = "atv_paired_protocol"
+
 # Default values
 DEFAULT_ENABLED = True
 DEFAULT_ACTIVE_START = "06:00:00"
@@ -143,4 +149,3 @@ SERVICE_DELETE_ENTRY = "delete_entry"
 
 # Storage keys
 STORAGE_KEY_TOKEN = "frame_token"
-

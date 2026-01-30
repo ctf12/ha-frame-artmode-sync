@@ -6,6 +6,8 @@ import asyncio
 import logging
 from typing import Any
 
+from homeassistant.exceptions import HomeAssistantError
+
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
@@ -122,6 +124,8 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                     await asyncio.wait_for(controller.async_repair_apple_tv(), timeout=60.0)  # Longer timeout for pairing
                 elif service == SERVICE_REPAIR_SAMSUNG_TV:
                     await asyncio.wait_for(controller.async_repair_samsung_tv(), timeout=60.0)  # Longer timeout for pairing
+            except HomeAssistantError as ex:
+                _LOGGER.warning("Service %s on %s: %s", service, entry_id, ex)
             except asyncio.TimeoutError:
                 _LOGGER.error("Service %s on %s timed out after %d seconds", service, entry_id, SERVICE_TIMEOUT)
             except Exception as ex:
@@ -240,4 +244,3 @@ async def async_unload_services(hass: HomeAssistant) -> None:
     hass.services.async_remove(DOMAIN, SERVICE_REPAIR_APPLE_TV)
     hass.services.async_remove(DOMAIN, SERVICE_REPAIR_SAMSUNG_TV)
     hass.services.async_remove(DOMAIN, SERVICE_DELETE_ENTRY)
-

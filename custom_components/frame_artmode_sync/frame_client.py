@@ -75,7 +75,8 @@ class FrameClient:
                     _LOGGER.debug("start_listening() completed successfully in %.2fs", listen_elapsed)
                 except UnauthorizedError:
                     if self.token:
-                        _LOGGER.warning("Frame TV rejected saved token - may need to re-pair. Token: %s", self.token[:10] + "..." if len(self.token) > 10 else self.token)
+                        # Token is a secret; never log it (even partially).
+                        _LOGGER.warning("Frame TV rejected saved token - may need to re-pair.")
                     else:
                         _LOGGER.info("Pairing required for Frame TV (no token available)")
                     if token_callback:
@@ -86,7 +87,7 @@ class FrameClient:
                         )
                         if token:
                             self.token = token
-                            _LOGGER.info("Obtained new Frame TV token: %s", token[:10] + "..." if len(token) > 10 else token)
+                            _LOGGER.info("Obtained new Frame TV token from TV; saving for future connections")
                             # Save token via callback (assume it's async)
                             if token_callback:
                                 try:
@@ -140,6 +141,7 @@ class FrameClient:
 
     def _get_token(self) -> str | None:
         """Get token from TV (blocking)."""
+        tv: SamsungTVWS | None = None
         try:
             tv = SamsungTVWS(
                 host=self.host,
@@ -153,6 +155,13 @@ class FrameClient:
         except Exception as ex:
             _LOGGER.error("Failed to get token: %s", ex)
             return None
+        finally:
+            # Ensure we always close the temp websocket connection.
+            try:
+                if tv:
+                    tv.close()
+            except Exception:
+                pass
 
     async def async_disconnect(self) -> None:
         """Disconnect from Frame TV."""
@@ -171,6 +180,36 @@ class FrameClient:
             if not await self.async_connect():
                 _LOGGER.debug("Failed to connect to TV for art mode check")
                 return None
+
+        # Prefer samsungtvws Art API (stable across versions) if available.
+        try:
+            art_factory = getattr(self._tv, "art", None)
+            if callable(art_factory):
+                art = art_factory()
+                value = await asyncio.wait_for(
+                    asyncio.to_thread(art.get_artmode),
+                    timeout=COMMAND_TIMEOUT,
+                )
+                # samsungtvws typically returns "on"/"off" (string) but normalize broadly.
+                if isinstance(value, bool):
+                    _LOGGER.info("Art Mode state read via art API: %s", "ON" if value else "OFF")
+                    return value
+                if isinstance(value, int):
+                    state = value != 0
+                    _LOGGER.info("Art Mode state read via art API: %s", "ON" if state else "OFF")
+                    return state
+                if isinstance(value, str):
+                    normalized = value.strip().lower()
+                    if normalized in ("on", "true", "1"):
+                        _LOGGER.info("Art Mode state read via art API: ON (value='%s')", value)
+                        return True
+                    if normalized in ("off", "false", "0"):
+                        _LOGGER.info("Art Mode state read via art API: OFF (value='%s')", value)
+                        return False
+                _LOGGER.debug("Unexpected art mode value from art API: %r", value)
+        except Exception as ex:
+            # Fall back to REST device info below
+            _LOGGER.debug("Art API get_artmode failed, falling back to REST device info: %s", ex)
 
         try:
             _LOGGER.debug("Reading Art Mode state from TV at %s:%d", self.host, self.port)
@@ -204,41 +243,23 @@ class FrameClient:
                 return False
 
         try:
-            # Check if artmode method exists (may not be available in all samsungtvws versions)
-            if hasattr(self._tv, 'artmode'):
-                # Method exists, try to use it
-                try:
-                    _LOGGER.debug("Calling TV.artmode(%s)", on)
-                    if on:
-                        await asyncio.wait_for(
-                            asyncio.to_thread(self._tv.artmode, True),
-                            timeout=COMMAND_TIMEOUT,
-                        )
-                    else:
-                        await asyncio.wait_for(
-                            asyncio.to_thread(self._tv.artmode, False),
-                            timeout=COMMAND_TIMEOUT,
-                        )
-                    _LOGGER.info("Art Mode command sent successfully: %s", "ON" if on else "OFF")
-                    return True
-                except AttributeError as ex:
-                    # Method exists but call failed (may be a property or different signature)
-                    _LOGGER.warning(
-                        "SamsungTVWS.artmode() call failed (method may not be callable): %s", ex
-                    )
-                    return False
-            else:
-                # Method doesn't exist - this version of samsungtvws doesn't support it
+            art_factory = getattr(self._tv, "art", None)
+            if not callable(art_factory):
                 _LOGGER.warning(
-                    "SamsungTVWS.artmode() method not available in this library version. "
-                    "Art mode control may not work correctly. "
-                    "Please update samsungtvws library or use fallback methods."
+                    "SamsungTVWS.art() API not available in this samsungtvws version. "
+                    "Cannot control Art Mode; please upgrade samsungtvws."
                 )
                 return False
-        except AttributeError as ex:
-            # Method was removed or doesn't exist
-            _LOGGER.warning("Art mode method not available: %s", ex)
-            return False
+
+            art = art_factory()
+            # Pass string form for compatibility (some versions expect 'on'/'off').
+            value = "on" if on else "off"
+            await asyncio.wait_for(
+                asyncio.to_thread(art.set_artmode, value),
+                timeout=COMMAND_TIMEOUT,
+            )
+            _LOGGER.info("Art Mode command sent successfully via art API: %s", "ON" if on else "OFF")
+            return True
         except Exception as ex:
             _LOGGER.warning("Failed to set Art Mode to %s: %s", "ON" if on else "OFF", ex)
             self._connection_failures += 1
