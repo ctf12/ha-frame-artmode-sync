@@ -20,6 +20,10 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Global per-TV connect locks to avoid multiple concurrent websocket sessions to the
+# same TV (which can trigger repeated pairing prompts).
+_GLOBAL_CONNECT_LOCKS: dict[str, asyncio.Lock] = {}
+
 
 class FrameClient:
     """Samsung Frame TV client."""
@@ -43,44 +47,66 @@ class FrameClient:
 
     async def async_connect(self, token_callback: Any | None = None) -> bool:
         """Connect to Frame TV."""
-        async with self._lock:
-            connect_start_time = asyncio.get_running_loop().time()
-            try:
-                if self.token:
-                    _LOGGER.info("Connecting to Frame TV at %s:%d with saved token (timeout=%ds)", 
-                                self.host, self.port, CONNECTION_TIMEOUT)
-                else:
-                    _LOGGER.info("Connecting to Frame TV at %s:%d (no token - pairing may be required, timeout=%ds)", 
-                                self.host, self.port, CONNECTION_TIMEOUT)
-                _LOGGER.debug("Creating SamsungTVWS object: host=%s, port=%d, token_present=%s, timeout=%ds",
-                             self.host, self.port, self.token is not None, CONNECTION_TIMEOUT)
-                self._tv = SamsungTVWS(
-                    host=self.host,
-                    port=self.port,
-                    token=self.token,
-                    name=self.client_name,
-                    timeout=CONNECTION_TIMEOUT,
-                )
-
-                # Try to connect
+        tv_key = f"{self.host}:{self.port}"
+        global_lock = _GLOBAL_CONNECT_LOCKS.setdefault(tv_key, asyncio.Lock())
+        async with global_lock:
+            async with self._lock:
+                connect_start_time = asyncio.get_running_loop().time()
                 try:
-                    _LOGGER.debug("Calling start_listening() on TV at %s:%d (timeout=%ds)", 
-                                 self.host, self.port, CONNECTION_TIMEOUT)
-                    listen_start_time = asyncio.get_running_loop().time()
-                    await asyncio.wait_for(
-                        asyncio.to_thread(self._tv.start_listening),
+                    if self.token:
+                        _LOGGER.info(
+                            "Connecting to Frame TV at %s:%d with saved token (timeout=%ds)",
+                            self.host,
+                            self.port,
+                            CONNECTION_TIMEOUT,
+                        )
+                    else:
+                        _LOGGER.info(
+                            "Connecting to Frame TV at %s:%d (no token - pairing may be required, timeout=%ds)",
+                            self.host,
+                            self.port,
+                            CONNECTION_TIMEOUT,
+                        )
+
+                    _LOGGER.debug(
+                        "Creating SamsungTVWS object: host=%s, port=%d, token_present=%s, timeout=%ds",
+                        self.host,
+                        self.port,
+                        self.token is not None,
+                        CONNECTION_TIMEOUT,
+                    )
+                    self._tv = SamsungTVWS(
+                        host=self.host,
+                        port=self.port,
+                        token=self.token,
+                        name=self.client_name,
                         timeout=CONNECTION_TIMEOUT,
                     )
-                    listen_elapsed = asyncio.get_running_loop().time() - listen_start_time
-                    _LOGGER.debug("start_listening() completed successfully in %.2fs", listen_elapsed)
-                except UnauthorizedError:
-                    if self.token:
-                        # Token is a secret; never log it (even partially).
-                        _LOGGER.warning("Frame TV rejected saved token - may need to re-pair.")
-                    else:
-                        _LOGGER.info("Pairing required for Frame TV (no token available)")
-                    if token_callback:
-                        # Get token (blocking operation)
+
+                    # Try to connect
+                    try:
+                        _LOGGER.debug(
+                            "Calling start_listening() on TV at %s:%d (timeout=%ds)",
+                            self.host,
+                            self.port,
+                            CONNECTION_TIMEOUT,
+                        )
+                        listen_start_time = asyncio.get_running_loop().time()
+                        await asyncio.wait_for(
+                            asyncio.to_thread(self._tv.start_listening),
+                            timeout=CONNECTION_TIMEOUT,
+                        )
+                        listen_elapsed = asyncio.get_running_loop().time() - listen_start_time
+                        _LOGGER.debug("start_listening() completed successfully in %.2fs", listen_elapsed)
+                    except UnauthorizedError:
+                        if self.token:
+                            _LOGGER.warning("Frame TV rejected saved token - may need to re-pair.")
+                        else:
+                            _LOGGER.info("Pairing required for Frame TV (no token available)")
+
+                        if not token_callback:
+                            raise
+
                         token = await asyncio.wait_for(
                             asyncio.to_thread(self._get_token),
                             timeout=30.0,
@@ -88,17 +114,15 @@ class FrameClient:
                         if token:
                             self.token = token
                             _LOGGER.info("Obtained new Frame TV token from TV; saving for future connections")
-                            # Save token via callback (assume it's async)
-                            if token_callback:
-                                try:
-                                    if asyncio.iscoroutinefunction(token_callback):
-                                        await token_callback(token)
-                                    else:
-                                        # Sync callback, run in executor
-                                        await asyncio.to_thread(token_callback, token)
-                                    _LOGGER.info("Saved Frame TV token for future connections")
-                                except Exception as ex:
-                                    _LOGGER.warning("Error saving token: %s", ex)
+                            try:
+                                if asyncio.iscoroutinefunction(token_callback):
+                                    await token_callback(token)
+                                else:
+                                    await asyncio.to_thread(token_callback, token)
+                                _LOGGER.info("Saved Frame TV token for future connections")
+                            except Exception as ex:  # noqa: BLE001
+                                _LOGGER.warning("Error saving token: %s", ex)
+
                             # Reconnect with token
                             self._tv = SamsungTVWS(
                                 host=self.host,
@@ -111,51 +135,60 @@ class FrameClient:
                                 asyncio.to_thread(self._tv.start_listening),
                                 timeout=CONNECTION_TIMEOUT,
                             )
-                    else:
-                        raise
 
-                # If the TV issued/rotated a token during connection (common on first pairing),
-                # persist it so we don't re-pair and generate a new token on every restart.
-                try:
-                    tv_token = getattr(self._tv, "token", None) if self._tv else None
-                    if tv_token and tv_token != self.token:
-                        self.token = tv_token
-                        if token_callback:
-                            try:
-                                if asyncio.iscoroutinefunction(token_callback):
-                                    await token_callback(tv_token)
-                                else:
-                                    await asyncio.to_thread(token_callback, tv_token)
-                                _LOGGER.info("Saved Frame TV token for future connections")
-                            except Exception as ex:  # noqa: BLE001
-                                _LOGGER.warning("Error saving token: %s", ex)
-                except Exception as ex:  # noqa: BLE001
-                    _LOGGER.debug("Unable to persist Frame TV token after connect: %s", ex)
+                    # If the TV issued/rotated a token during connection (common on first pairing),
+                    # persist it so we don't re-pair and generate a new token on every restart.
+                    try:
+                        tv_token = getattr(self._tv, "token", None) if self._tv else None
+                        if tv_token and tv_token != self.token:
+                            self.token = tv_token
+                            if token_callback:
+                                try:
+                                    if asyncio.iscoroutinefunction(token_callback):
+                                        await token_callback(tv_token)
+                                    else:
+                                        await asyncio.to_thread(token_callback, tv_token)
+                                    _LOGGER.info("Saved Frame TV token for future connections")
+                                except Exception as ex:  # noqa: BLE001
+                                    _LOGGER.warning("Error saving token: %s", ex)
+                    except Exception as ex:  # noqa: BLE001
+                        _LOGGER.debug("Unable to persist Frame TV token after connect: %s", ex)
 
-                self._connection_failures = 0
-                connect_elapsed = asyncio.get_running_loop().time() - connect_start_time
-                _LOGGER.info("Connected to Frame TV at %s:%d (took %.2fs)", 
-                            self.host, self.port, connect_elapsed)
-                return True
+                    self._connection_failures = 0
+                    connect_elapsed = asyncio.get_running_loop().time() - connect_start_time
+                    _LOGGER.info(
+                        "Connected to Frame TV at %s:%d (took %.2fs)",
+                        self.host,
+                        self.port,
+                        connect_elapsed,
+                    )
+                    return True
 
-            except asyncio.TimeoutError:
-                elapsed = asyncio.get_running_loop().time() - connect_start_time
-                _LOGGER.warning(
-                    "Connection timeout to Frame TV at %s:%d after %.2fs (timeout=%ds). "
-                    "TV may be off, unreachable, or not accepting connections. "
-                    "Check TV power state and network connectivity.",
-                    self.host, self.port, elapsed, CONNECTION_TIMEOUT
-                )
-                self._connection_failures += 1
-                return False
-            except Exception as ex:
-                elapsed = asyncio.get_running_loop().time() - connect_start_time
-                _LOGGER.warning(
-                    "Failed to connect to Frame TV at %s:%d after %.2fs: %s (%s)",
-                    self.host, self.port, elapsed, ex, type(ex).__name__
-                )
-                self._connection_failures += 1
-                return False
+                except asyncio.TimeoutError:
+                    elapsed = asyncio.get_running_loop().time() - connect_start_time
+                    _LOGGER.warning(
+                        "Connection timeout to Frame TV at %s:%d after %.2fs (timeout=%ds). "
+                        "TV may be off, unreachable, or not accepting connections. "
+                        "Check TV power state and network connectivity.",
+                        self.host,
+                        self.port,
+                        elapsed,
+                        CONNECTION_TIMEOUT,
+                    )
+                    self._connection_failures += 1
+                    return False
+                except Exception as ex:
+                    elapsed = asyncio.get_running_loop().time() - connect_start_time
+                    _LOGGER.warning(
+                        "Failed to connect to Frame TV at %s:%d after %.2fs: %s (%s)",
+                        self.host,
+                        self.port,
+                        elapsed,
+                        ex,
+                        type(ex).__name__,
+                    )
+                    self._connection_failures += 1
+                    return False
 
     def _get_token(self) -> str | None:
         """Get token from TV (blocking)."""
