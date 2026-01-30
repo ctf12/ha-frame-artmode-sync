@@ -215,6 +215,14 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config = self._pairing_config or await self._get_atv_config()
         if config is None:
             _LOGGER.warning("Could not find Apple TV for pairing (host=%s identifier=%s)", apple_tv_host, apple_tv_identifier)
+            # Allow user to proceed even if discovery fails. This avoids a dead-end
+            # loop where the form can never be submitted successfully.
+            if user_input is not None:
+                _LOGGER.warning(
+                    "Proceeding without Apple TV pairing because the device could not be discovered. "
+                    "Apple TV features (Companion push updates) will be unavailable until pairing succeeds."
+                )
+                return await self.async_step_options()
             description_placeholders = {
                 "instructions": "On Apple TV: Settings → Remotes and Devices → Remote App and Devices. Approve the request. "
                 "If a PIN appears, enter it below; otherwise just continue.",
