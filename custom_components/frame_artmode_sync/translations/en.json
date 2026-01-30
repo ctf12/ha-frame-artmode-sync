@@ -45,6 +45,7 @@
       },
       "options": {
         "title": "Options",
+        "description": "Optional. If pyatv cannot connect, you can select an Apple TV media_player entity as a fallback state source. Do not select the Samsung TV media_player here.",
         "data": {
           "fallback_ha_media_player_entity": "Apple TV Fallback Media Player Entity",
           "presence_mode": "Presence Mode",
@@ -55,7 +56,7 @@
           "enable_wol_fallback": "Enable WOL Fallback"
         },
         "data_description": {
-          "fallback_ha_media_player_entity": "Fallback media player entity for Apple TV state when direct pyatv connection fails",
+          "fallback_ha_media_player_entity": "Select an Apple TV media_player entity (e.g., from the Apple TV integration). This is NOT the Samsung TV entity. Used only as a fallback when pyatv is unavailable.",
           "tv_state_source_entity_id": "Media player entity for Samsung Frame TV state (e.g., media_player.great_room_frame_tv from Samsung TV integration)",
           "wake_remote_entity_id": "Remote entity to use for waking TV (e.g., remote.55_frame_tv_remote)",
           "presence_entity_id": "Entity to monitor for presence (e.g., person.chris, device_tracker.iphone)",
