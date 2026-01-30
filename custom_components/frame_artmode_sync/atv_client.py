@@ -125,6 +125,8 @@ class ATVClient:
         self._reconnect_task: asyncio.Task | None = None
         self._reconnect_backoff = 10.0  # Start with 10s
         self._should_reconnect = True
+        self._power_poll_task: asyncio.Task | None = None
+        self._power_poll_interval = 5.0  # seconds (lightweight, best-effort)
 
     async def async_connect(self) -> bool:
         """Connect to Apple TV."""
@@ -176,6 +178,16 @@ class ATVClient:
                 else:
                     _LOGGER.warning("pyatv push updater unavailable; push updates disabled")
 
+                # Start a lightweight power poller to improve robustness when the
+                # Apple TV is sleepy or when push/metadata are incomplete. This mirrors
+                # the reliability strategy used by external scripts (Companion first,
+                # then fall back to AirPlay for power_state reads).
+                #
+                # Ref: pyatv exposes AppleTV.power.power_state and supports multiple
+                # protocols (Companion/AirPlay) via Protocol.* ([pyatv.interface](https://pyatv.dev/api/interface/#pyatv.interface)).
+                if not self._power_poll_task:
+                    self._power_poll_task = asyncio.create_task(self._power_state_poller())
+
                 await self._update_state()
                 _LOGGER.info("Connected to Apple TV via Companion, active=%s", self._current_state)
                 self._reconnect_backoff = 10.0
@@ -206,6 +218,13 @@ class ATVClient:
                 except asyncio.CancelledError:
                     pass
                 self._reconnect_task = None
+            if self._power_poll_task:
+                self._power_poll_task.cancel()
+                try:
+                    await self._power_poll_task
+                except asyncio.CancelledError:
+                    pass
+                self._power_poll_task = None
             await self._handle_disconnect()
 
     async def _handle_disconnect(self) -> None:
@@ -246,6 +265,87 @@ class ATVClient:
         else:
             self._grace_until = None
             await self._set_state(False, "disconnected")
+
+    async def _power_state_poller(self) -> None:
+        """Best-effort periodic power_state polling (non-blocking).
+
+        Strategy inspired by frameTVArtModePi:
+        - Try reading power_state via the existing Companion connection.
+        - If unsupported or fails, try a short-lived AirPlay connection to read power_state.
+        """
+        while self._should_reconnect:
+            try:
+                await asyncio.sleep(self._power_poll_interval)
+                if not self.atv:
+                    continue
+
+                power_state = await self._safe_get_power_state(self.atv)
+                if power_state is None:
+                    # Fallback: short-lived AirPlay connect to read power_state.
+                    power_state = await self._probe_power_state_via_airplay()
+
+                if power_state is None:
+                    continue
+
+                if power_state != self._power_state:
+                    old = self._power_state
+                    self._power_state = power_state
+                    _LOGGER.debug("ATV power_state updated via poller: %s -> %s", old, power_state)
+
+                # If user configured power_on mode, power_state is authoritative for active.
+                if self.active_mode == ATV_ACTIVE_MODE_POWER_ON:
+                    active = self._power_state == PowerState.On
+                    await self._set_state(active, self._playback_state)
+
+            except asyncio.CancelledError:
+                break
+            except Exception:  # noqa: BLE001
+                # Keep silent (debug only) to avoid log spam.
+                _LOGGER.debug("Power poller error", exc_info=True)
+
+    async def _safe_get_power_state(self, atv: Any) -> PowerState | None:
+        """Safely read atv.power.power_state across pyatv versions."""
+        power = getattr(atv, "power", None)
+        if not power:
+            return None
+        try:
+            attr = getattr(power, "power_state", None)
+            if attr is None:
+                return None
+            if callable(attr):
+                return await attr()
+            if asyncio.iscoroutine(attr):
+                return await attr
+            # Some versions expose it as an awaitable property
+            return await attr  # type: ignore[misc]
+        except Exception:
+            return None
+
+    async def _probe_power_state_via_airplay(self) -> PowerState | None:
+        """Try a short-lived AirPlay connection to read power_state (best effort)."""
+        try:
+            loop = asyncio.get_running_loop()
+            config = await async_get_atv_config(loop, self.identifier, self.host)
+            if not config:
+                return None
+
+            # Connect via AirPlay for tolerant power_state reads (mirrors atvremote fallback).
+            try:
+                atv = await connect(config, protocol=Protocol.AirPlay, loop=loop)
+            except TypeError:
+                atv = await connect(config, protocol=Protocol.AirPlay)
+
+            try:
+                return await asyncio.wait_for(self._safe_get_power_state(atv), timeout=3.0)
+            finally:
+                try:
+                    close_result = atv.close()
+                    if asyncio.iscoroutine(close_result):
+                        await close_result
+                except Exception:
+                    pass
+        except Exception:
+            return None
 
     def _get_companion_credential(self) -> str | None:
         """Fetch Companion credential from config entry data/options."""
