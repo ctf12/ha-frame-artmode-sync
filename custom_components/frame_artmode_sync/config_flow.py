@@ -83,20 +83,38 @@ async def async_discover_apple_tvs(hass: HomeAssistant) -> list[dict[str, str]]:
 
     try:
         loop = asyncio.get_running_loop()
-        # pyatv compatibility: some versions require loop parameter
+        # Apple TVs can be slow to advertise (especially when waking), so use a
+        # slightly longer scan window than the default.
+        results = None
         try:
-            results = await scan(loop=loop, timeout=5)
+            results = await scan(loop=loop, timeout=12)
         except TypeError:
             # Fallback for versions that don't accept loop parameter
-            results = await scan(timeout=5)
-        
-        devices = []
+            results = await scan(timeout=12)
+
+        if not results:
+            _LOGGER.warning(
+                "No Apple TVs discovered via mDNS. If your Apple TV is asleep, wake it. "
+                "If Home Assistant is in Docker/VM, ensure it has mDNS access (host networking or mDNS reflector)."
+            )
+            return []
+
+        devices_by_id: dict[str, dict[str, str]] = {}
         for atv in results:
-            devices.append({
-                "identifier": str(atv.identifier),
-                "name": atv.name,
-                "host": str(atv.address),
-            })
+            identifier = str(getattr(atv, "identifier", "")).strip()
+            name = str(getattr(atv, "name", "")).strip() or "Apple TV"
+            host = str(getattr(atv, "address", "")).strip()
+            if not identifier:
+                # Fall back to address as key if identifier missing (should be rare)
+                identifier = host or name
+            devices_by_id[identifier] = {
+                "identifier": identifier,
+                "name": name,
+                "host": host,
+            }
+
+        devices = list(devices_by_id.values())
+        _LOGGER.debug("Discovered %d Apple TV(s): %s", len(devices), [d["name"] for d in devices])
         return devices
     except Exception as ex:
         _LOGGER.error("Error discovering Apple TVs: %s", ex)
