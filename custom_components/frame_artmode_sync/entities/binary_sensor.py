@@ -171,7 +171,16 @@ class FrameArtModeSyncATVPushActiveBinarySensor(_FrameArtModeSyncPollingBinarySe
         if not self.controller or not getattr(self.controller, "atv_client", None):
             return False
         client = self.controller.atv_client
-        return bool(client.is_connected and client.push_updater is not None)
+        # Use pyatv's real PushUpdater.active flag when available.
+        # Some pyatv versions might not expose `.active`, so use getattr(..., False).
+        try:
+            return bool(
+                client.atv
+                and getattr(client.atv, "push_updater", None)
+                and getattr(client.atv.push_updater, "active", False)
+            )
+        except Exception:  # noqa: BLE001
+            return False
 
 
 class FrameArtModeSyncFrameConnectedBinarySensor(_FrameArtModeSyncPollingBinarySensor):

@@ -373,6 +373,8 @@ class ATVClient:
             power = getattr(self.atv, 'power', None)
             # Try to get playing interface - may not be available on all pyatv versions
             playing = getattr(self.atv, 'playing', None)
+            # Metadata is more broadly available and can provide playing info in some cases.
+            # Ref: pyatv public interface exposes AppleTV.metadata.playing ([pyatv.interface](https://pyatv.dev/api/interface/#pyatv.interface)).
 
             old_power_state = self._power_state
             old_playback_state = self._playback_state
@@ -397,6 +399,22 @@ class ATVClient:
                 # If playing interface is not available, state will come from push updates
                 _LOGGER.debug("Playing interface not available, will rely on push updates for playback state")
 
+            # If playback is still unknown, try metadata.playing as a secondary source.
+            if self._playback_state in ("unknown",) or not self._playback_state:
+                try:
+                    meta_playing = await self._safe_get_playing(self.atv)
+                    if meta_playing is not None:
+                        meta_state = self._playback_state_from_playing(meta_playing)
+                        if meta_state and meta_state != self._playback_state:
+                            _LOGGER.debug(
+                                "ATV playback state inferred via metadata: %s -> %s",
+                                self._playback_state,
+                                meta_state,
+                            )
+                            self._playback_state = meta_state
+                except Exception:  # noqa: BLE001
+                    pass
+
             old_active = self._current_state
             active = self._compute_active()
             _LOGGER.debug("ATV active computation: power=%s, playback=%s, active_mode=%s -> active=%s", 
@@ -412,16 +430,52 @@ class ATVClient:
         except Exception as ex:
             _LOGGER.warning("Error updating ATV state: %s", ex)
 
+    async def _safe_get_playing(self, atv: Any) -> Playing | None:
+        """Safely read metadata.playing across pyatv versions (best effort).
+
+        Some versions expose metadata.playing as:
+        - a property returning Playing
+        - a coroutine function
+        - an awaitable
+        """
+        md = getattr(atv, "metadata", None)
+        if not md:
+            return None
+
+        playing_attr = getattr(md, "playing", None)
+        if playing_attr is None:
+            return None
+
+        try:
+            if callable(playing_attr):
+                return await playing_attr()
+            # If it's awaitable, try awaiting it; otherwise treat as value.
+            if asyncio.iscoroutine(playing_attr):
+                return await playing_attr
+            return playing_attr
+        except TypeError:
+            # Some variants require awaiting the attribute
+            try:
+                return await playing_attr  # type: ignore[misc]
+            except Exception:  # noqa: BLE001
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _playback_state_from_playing(self, playing: Playing | None) -> str:
         """Get playback state string from Playing object."""
         if not playing:
             return "idle"
-        if playing.device_state == DeviceState.Playing:
+        state = getattr(playing, "device_state", None)
+        if state == DeviceState.Playing:
             return "playing"
-        if playing.device_state == DeviceState.Paused:
+        if state == DeviceState.Paused:
             return "paused"
-        if playing.device_state == DeviceState.Loading:
-            return "loading"
+        # Treat Loading/Seeking as "playing" for activity detection (high-signal).
+        if state == DeviceState.Loading:
+            return "playing"
+        if hasattr(DeviceState, "Seeking") and state == getattr(DeviceState, "Seeking"):
+            return "playing"
         return "idle"
 
     def _compute_active(self) -> bool:
