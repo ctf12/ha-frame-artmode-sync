@@ -424,3 +424,7 @@ class FrameClient:
         """Return connection failure count."""
         return self._connection_failures
 
+    @property
+    def is_connected(self) -> bool:
+        """Return if websocket connection is established."""
+        return self._tv is not None

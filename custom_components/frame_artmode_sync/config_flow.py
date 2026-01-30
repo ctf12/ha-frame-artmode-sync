@@ -215,9 +215,15 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config = self._pairing_config or await self._get_atv_config()
         if config is None:
             _LOGGER.warning("Could not find Apple TV for pairing (host=%s identifier=%s)", apple_tv_host, apple_tv_identifier)
+            description_placeholders = {
+                "instructions": "On Apple TV: Settings → Remotes and Devices → Remote App and Devices. Approve the request. "
+                "If a PIN appears, enter it below; otherwise just continue.",
+                "pin": "Check your Apple TV screen",
+            }
             return self.async_show_form(
                 step_id="pair_apple_tv",
                 data_schema=vol.Schema({}),
+                description_placeholders=description_placeholders,
                 errors={"base": "not_found"},
             )
 
@@ -236,9 +242,15 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 pin = await self._start_companion_pairing(config)
             except PairingError as err:
                 _LOGGER.warning("Unable to start Companion pairing: %s", err)
+                description_placeholders = {
+                    "instructions": "On Apple TV: Settings → Remotes and Devices → Remote App and Devices. Approve the request. "
+                    "If a PIN appears, enter it below; otherwise just continue.",
+                    "pin": "Check your Apple TV screen",
+                }
                 return self.async_show_form(
                     step_id="pair_apple_tv",
                     data_schema=vol.Schema({}),
+                    description_placeholders=description_placeholders,
                     errors={"base": "pairing_failed"},
                 )
 

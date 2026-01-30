@@ -35,15 +35,12 @@
       },
       "pair_apple_tv": {
         "title": "Pair Apple TV",
-        "description": "On Apple TV open Settings → Remotes and Devices → Remote App and Devices, approve the request, and if a PIN appears enter it below. If no PIN appears, just continue.\n\nPIN Code: {pin}",
+        "description": "On Apple TV open Settings → Remotes and Devices → Remote App and Devices, approve the request, and if a PIN appears enter it below. If no PIN appears, just continue.",
         "data": {
           "pin": "PIN Code"
         },
         "data_description": {
           "pin": "Enter the PIN code shown on your Apple TV screen"
-        },
-        "description_placeholders": {
-          "pin": "Check your Apple TV screen"
         }
       },
       "options": {
