@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from copy import deepcopy
 from typing import Any
 
 from samsungtvws import SamsungTVWS
@@ -23,6 +24,38 @@ _LOGGER = logging.getLogger(__name__)
 # Global per-TV connect locks to avoid multiple concurrent websocket sessions to the
 # same TV (which can trigger repeated pairing prompts).
 _GLOBAL_CONNECT_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _redact_tokens(obj: Any) -> Any:
+    """Best-effort redaction for token-like fields in exception payloads."""
+    try:
+        if isinstance(obj, dict):
+            data = deepcopy(obj)
+            # Common keys that may include auth/token material
+            for key in ("token", "Token", "auth", "Auth", "credentials", "credential"):
+                if key in data:
+                    data[key] = "***"
+            # Also redact nested attributes.token if present
+            attrs = data.get("data", {}).get("attributes") if isinstance(data.get("data"), dict) else None
+            if isinstance(attrs, dict) and "token" in attrs:
+                attrs = dict(attrs)
+                attrs["token"] = "***"
+                data["data"] = dict(data.get("data", {}))
+                data["data"]["attributes"] = attrs
+            return data
+    except Exception:  # noqa: BLE001
+        return "<redacted>"
+    return obj
+
+
+def _looks_like_ws_event(obj: Any) -> bool:
+    """Return True if obj looks like a samsungtvws websocket event/timeOut payload."""
+    if isinstance(obj, dict):
+        event = obj.get("event")
+        return isinstance(event, str) and event.startswith("ms.channel")
+    if isinstance(obj, str):
+        return "ms.channel" in obj
+    return False
 
 
 class FrameClient:
@@ -224,6 +257,11 @@ class FrameClient:
                     pass
                 self._tv = None
 
+    async def _reconnect(self) -> bool:
+        """Force reconnect to clear stale websocket sessions."""
+        await self.async_disconnect()
+        return await self.async_connect()
+
     async def async_get_artmode(self) -> bool | None:
         """Get current Art Mode state."""
         if not self._tv:
@@ -233,55 +271,53 @@ class FrameClient:
                 return None
 
         # Prefer samsungtvws Art API (stable across versions) if available.
-        try:
-            art_factory = getattr(self._tv, "art", None)
-            if callable(art_factory):
-                art = art_factory()
-                value = await asyncio.wait_for(
-                    asyncio.to_thread(art.get_artmode),
-                    timeout=COMMAND_TIMEOUT,
-                )
-                # samsungtvws typically returns "on"/"off" (string) but normalize broadly.
-                if isinstance(value, bool):
-                    _LOGGER.info("Art Mode state read via art API: %s", "ON" if value else "OFF")
-                    return value
-                if isinstance(value, int):
-                    state = value != 0
-                    _LOGGER.info("Art Mode state read via art API: %s", "ON" if state else "OFF")
-                    return state
-                if isinstance(value, str):
-                    normalized = value.strip().lower()
-                    if normalized in ("on", "true", "1"):
-                        _LOGGER.info("Art Mode state read via art API: ON (value='%s')", value)
-                        return True
-                    if normalized in ("off", "false", "0"):
-                        _LOGGER.info("Art Mode state read via art API: OFF (value='%s')", value)
-                        return False
-                _LOGGER.debug("Unexpected art mode value from art API: %r", value)
-        except Exception as ex:
-            # Fall back to REST device info below
-            _LOGGER.debug("Art API get_artmode failed, falling back to REST device info: %s", ex)
-
-        try:
-            _LOGGER.debug("Reading Art Mode state from TV at %s:%d", self.host, self.port)
-            result = await asyncio.wait_for(
-                asyncio.to_thread(self._tv.rest_device_info),
-                timeout=COMMAND_TIMEOUT,
-            )
-            if result and "ArtModeStatus" in result:
-                status = result["ArtModeStatus"]
-                artmode_on = status == "on"
-                _LOGGER.info("Art Mode state read: %s (status='%s')", "ON" if artmode_on else "OFF", status)
-                return artmode_on
-            else:
-                _LOGGER.warning("ArtModeStatus not found in device info response: %s", result)
-        except Exception as ex:
-            _LOGGER.warning("Failed to get Art Mode from TV at %s:%d: %s", self.host, self.port, ex)
-            self._connection_failures += 1
+        art_factory = getattr(self._tv, "art", None)
+        if not callable(art_factory):
+            _LOGGER.warning("SamsungTVWS.art() API not available; cannot read Art Mode state")
             return None
 
-        _LOGGER.debug("Art Mode state read returned None (no status in response)")
-        return None
+        async def _read_once() -> bool | None:
+            art = art_factory()
+            value = await asyncio.wait_for(
+                asyncio.to_thread(art.get_artmode),
+                timeout=COMMAND_TIMEOUT,
+            )
+            # samsungtvws typically returns "on"/"off" (string) but normalize broadly.
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, int):
+                return value != 0
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in ("on", "true", "1"):
+                    return True
+                if normalized in ("off", "false", "0"):
+                    return False
+            # Some failure modes return event payloads instead of on/off.
+            if _looks_like_ws_event(value):
+                raise RuntimeError(_redact_tokens(value))
+            return None
+
+        try:
+            state = await _read_once()
+            if state is not None:
+                _LOGGER.info("Art Mode state read via art API: %s", "ON" if state else "OFF")
+            return state
+        except Exception as ex:
+            redacted = _redact_tokens(ex)
+            _LOGGER.debug("Art API get_artmode failed: %s", redacted)
+            # Common on 2024 models: stale websocket session. Reconnect once and retry.
+            if _looks_like_ws_event(ex) or _looks_like_ws_event(getattr(ex, "args", None)):
+                await self._reconnect()
+                try:
+                    state = await _read_once()
+                    if state is not None:
+                        _LOGGER.info("Art Mode state read via art API after reconnect: %s", "ON" if state else "OFF")
+                    return state
+                except Exception as ex2:  # noqa: BLE001
+                    _LOGGER.debug("Art API get_artmode retry failed: %s", _redact_tokens(ex2))
+            self._connection_failures += 1
+            return None
 
     async def async_set_artmode(self, on: bool) -> bool:
         """Set Art Mode on or off."""
@@ -293,26 +329,48 @@ class FrameClient:
                 _LOGGER.warning("Failed to connect to TV for art mode command")
                 return False
 
-        try:
-            art_factory = getattr(self._tv, "art", None)
-            if not callable(art_factory):
-                _LOGGER.warning(
-                    "SamsungTVWS.art() API not available in this samsungtvws version. "
-                    "Cannot control Art Mode; please upgrade samsungtvws."
-                )
-                return False
+        art_factory = getattr(self._tv, "art", None)
+        if not callable(art_factory):
+            _LOGGER.warning(
+                "SamsungTVWS.art() API not available in this samsungtvws version. "
+                "Cannot control Art Mode; please upgrade samsungtvws."
+            )
+            return False
 
+        async def _set_once() -> None:
             art = art_factory()
             # Pass string form for compatibility (some versions expect 'on'/'off').
             value = "on" if on else "off"
-            await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 asyncio.to_thread(art.set_artmode, value),
                 timeout=COMMAND_TIMEOUT,
             )
+            # Some failure modes return event payloads instead of acknowledging.
+            if _looks_like_ws_event(result):
+                raise RuntimeError(_redact_tokens(result))
+
+        try:
+            await _set_once()
             _LOGGER.info("Art Mode command sent successfully via art API: %s", "ON" if on else "OFF")
             return True
         except Exception as ex:
-            _LOGGER.warning("Failed to set Art Mode to %s: %s", "ON" if on else "OFF", ex)
+            _LOGGER.warning(
+                "Failed to set Art Mode to %s: %s",
+                "ON" if on else "OFF",
+                _redact_tokens(ex),
+            )
+            # Common on 2024 models: stale websocket session. Reconnect once and retry.
+            if _looks_like_ws_event(ex) or _looks_like_ws_event(getattr(ex, "args", None)):
+                await self._reconnect()
+                try:
+                    await _set_once()
+                    _LOGGER.info(
+                        "Art Mode command sent successfully via art API after reconnect: %s",
+                        "ON" if on else "OFF",
+                    )
+                    return True
+                except Exception as ex2:  # noqa: BLE001
+                    _LOGGER.warning("Art Mode retry failed: %s", _redact_tokens(ex2))
             self._connection_failures += 1
             return False
 
