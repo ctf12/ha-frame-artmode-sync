@@ -99,8 +99,18 @@ async def async_discover_apple_tvs(hass: HomeAssistant) -> list[dict[str, str]]:
             )
             return []
 
+        # We only care about devices that support Companion, since that is required
+        # for this integration's primary feature (push updates).
         devices_by_id: dict[str, dict[str, str]] = {}
         for atv in results:
+            try:
+                protocols = getattr(atv, "protocols", None)
+                if Protocol is not None and protocols is not None and Protocol.Companion not in protocols:
+                    continue
+            except Exception:  # noqa: BLE001
+                # If protocol list is unavailable, keep the device (best effort).
+                pass
+
             identifier = str(getattr(atv, "identifier", "")).strip()
             name = str(getattr(atv, "name", "")).strip() or "Apple TV"
             host = str(getattr(atv, "address", "")).strip()
@@ -181,9 +191,9 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="select_apple_tv",
                 data_schema=vol.Schema({
-                    vol.Required("apple_tv_identifier"): selector.SelectSelector(
-                        selector.SelectSelectorConfig(options=options)
-                    ),
+                    # Use vol.In for maximum compatibility across HA versions.
+                    # Some HA versions don't accept dict options in SelectSelectorConfig.
+                    vol.Required("apple_tv_identifier"): vol.In(options),
                 }),
             )
 
@@ -261,6 +271,12 @@ class FrameArtModeSyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is None:
             already_paired = await self._is_companion_paired(config)
             if already_paired:
+                # If already paired, still persist credentials (so runtime can reliably reconnect).
+                self.data[CONF_ATV_CREDENTIALS] = self._extract_credentials(config)
+                self.data[CONF_ATV_PAIRED_PROTOCOL] = "companion"
+                self.data[CONF_ATV_HOST] = str(config.address)
+                if getattr(config, "identifier", None):
+                    self.data[CONF_ATV_IDENTIFIER] = str(config.identifier)
                 _LOGGER.info("Apple TV already paired for Companion; continuing setup")
                 return await self.async_step_options()
 

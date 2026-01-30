@@ -220,6 +220,7 @@ class PairController:
         # Trackers
         self._presence_entity_id: str | None = config.get("presence_entity_id")
         self._presence_tracker: Any = None
+        self._fallback_atv_tracker: Any = None
         self._resync_unsub: Any = None
 
     async def async_setup(self) -> None:
@@ -371,6 +372,14 @@ class PairController:
                 self._on_presence_changed,
             )
 
+        # Setup Apple TV fallback media_player tracking (if configured)
+        if self.fallback_media_player:
+            self._fallback_atv_tracker = async_track_state_change_event(
+                self.hass,
+                [self.fallback_media_player],
+                self._on_fallback_atv_changed,
+            )
+
         # Setup resync timer
         resync_interval = self.config.get("resync_interval_minutes", DEFAULT_RESYNC_INTERVAL_MINUTES)
         if resync_interval > 0:
@@ -414,6 +423,8 @@ class PairController:
         
         if self._presence_tracker:
             self._presence_tracker()
+        if self._fallback_atv_tracker:
+            self._fallback_atv_tracker()
         if self._resync_unsub:
             self._resync_unsub()
 
@@ -457,6 +468,34 @@ class PairController:
         """Handle presence state change."""
         # Schedule through compute_and_enforce which acquires lock
         self.hass.async_create_task(self._compute_and_enforce(trigger=EVENT_TYPE_PRESENCE_CHANGE))
+
+    @callback
+    def _on_fallback_atv_changed(self, event: Event) -> None:
+        """Handle fallback Apple TV media_player state change."""
+        # Recompute; we'll incorporate fallback state into ATV activity during compute.
+        self.hass.async_create_task(self._compute_and_enforce(trigger=EVENT_TYPE_ATV_ON))
+
+    def _read_fallback_atv_state(self) -> tuple[bool | None, str | None]:
+        """Read Apple TV activity from fallback HA media_player entity (best effort)."""
+        entity_id = self.fallback_media_player
+        if not entity_id:
+            return None, None
+        state_obj = self.hass.states.get(entity_id)
+        if not state_obj:
+            return None, None
+
+        state = (state_obj.state or "").lower()
+        playback = state or "unknown"
+
+        active_mode = self.config.get("atv_active_mode", ATV_ACTIVE_MODE_PLAYING_OR_PAUSED)
+        if active_mode == ATV_ACTIVE_MODE_POWER_ON:
+            active = state not in ("off", "standby", "unknown", "unavailable")
+        elif active_mode == ATV_ACTIVE_MODE_PLAYING_ONLY:
+            active = state == "playing"
+        else:  # playing_or_paused
+            active = state in ("playing", "paused")
+
+        return active, playback
 
     async def _update_active_hours(self) -> None:
         """Update active hours state."""
@@ -581,6 +620,20 @@ class PairController:
 
         # Update active hours (doesn't trigger enforcement, just updates state)
         await self._update_active_hours()
+
+        # Incorporate fallback Apple TV media_player state (if configured). This is
+        # especially important because pyatv Companion may not always expose
+        # now-playing for all apps, while HA's Apple TV media_player usually does.
+        fallback_active, fallback_playback = self._read_fallback_atv_state()
+        if fallback_active is not None:
+            if fallback_active and not self._atv_active:
+                _LOGGER.info(
+                    "Fallback Apple TV entity indicates activity (%s); treating ATV as active",
+                    fallback_playback,
+                )
+                self._atv_active = True
+            if fallback_playback and fallback_playback != "unknown":
+                self._atv_playback_state = fallback_playback
 
         if trigger:
             self._last_trigger = trigger
